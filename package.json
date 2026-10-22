@@ -1,11 +1,11 @@
 {
-  "name": "folio-pdf",
-  "productName": "Folio PDF",
+  "name": "agility",
+  "productName": "Agility",
   "version": "0.1.0",
-  "description": "A cross-platform desktop PDF editor: view, annotate, sign, fill forms and rearrange pages.",
+  "description": "Agility \u2014 a cross-platform desktop PDF editor: edit text, OCR scans, annotate, sign, fill forms and rearrange pages.",
   "main": "main.js",
   "license": "MIT",
-  "author": "Folio PDF",
+  "author": "Agility",
   "scripts": {
     "start": "electron .",
     "icon": "node scripts/make-icon.js",
@@ -15,16 +15,22 @@
     "dist:linux": "electron-builder --linux"
   },
   "dependencies": {
+    "@fontsource/caveat": "^5.3.0",
+    "@fontsource/dancing-script": "^5.3.0",
+    "@fontsource/great-vibes": "^5.3.0",
+    "@fontsource/sacramento": "^5.3.0",
+    "@tesseract.js-data/eng": "^1.0.0",
     "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "^6.4.299"
+    "pdfjs-dist": "^6.4.299",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "electron": "^45.0.0",
     "electron-builder": "^26.15.3"
   },
   "build": {
-    "appId": "app.folio.pdf",
-    "productName": "Folio PDF",
+    "appId": "app.agility.pdf",
+    "productName": "Agility",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -77,7 +83,12 @@
         "AppImage",
         "deb"
       ],
-      "maintainer": "Folio PDF"
-    }
+      "maintainer": "Agility"
+    },
+    "asarUnpack": [
+      "node_modules/tesseract.js/**",
+      "node_modules/tesseract.js-core/**",
+      "node_modules/@tesseract.js-data/**"
+    ]
   }
 }

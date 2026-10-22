@@ -1,4 +1,4 @@
-// Folio PDF — Electron main process.
+// Agility — Electron main process.
 // Owns windows, native menus, file dialogs and disk access. The renderer never
 // touches the filesystem directly; it goes through the IPC handlers below.
 
@@ -6,9 +6,9 @@ const { app, BrowserWindow, ipcMain, dialog, Menu, protocol, shell } = require('
 const path = require('node:path');
 const fs = require('node:fs/promises');
 
-const APP_NAME = 'Folio PDF';
+const APP_NAME = 'Agility';
 const ROOT = __dirname;
-const SERVED_DIRS = ['src', 'node_modules/pdfjs-dist', 'node_modules/pdf-lib/dist'].map((d) =>
+const SERVED_DIRS = ['src', 'node_modules/pdfjs-dist', 'node_modules/pdf-lib/dist', 'node_modules/@fontsource'].map((d) =>
   path.join(ROOT, d)
 );
 const MIME = {
@@ -23,6 +23,8 @@ const MIME = {
   '.bcmap': 'application/octet-stream',
   '.pfb': 'application/octet-stream',
   '.ttf': 'font/ttf',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
   '.icc': 'application/octet-stream',
 };
 
@@ -178,6 +180,14 @@ function buildMenu() {
         { label: 'Extract Page as PDF…', click: send('extract-page') },
       ],
     },
+    {
+      label: 'Tools',
+      submenu: [
+        { label: 'Edit PDF Text', accelerator: 'CmdOrCtrl+E', click: send('tool-edittext') },
+        { label: 'Recognize Text (OCR)…', accelerator: 'CmdOrCtrl+Shift+O', click: send('ocr') },
+        { label: 'Sign…', click: send('tool-signature') },
+      ],
+    },
     { role: 'windowMenu' },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
@@ -221,6 +231,53 @@ ipcMain.handle('pdf:write', async (_e, filePath, data) => {
   if (!writablePaths.has(filePath)) throw new Error('Path was not opened by the user');
   await fs.writeFile(filePath, data);
   return { path: filePath, name: path.basename(filePath) };
+});
+
+// ---- OCR ------------------------------------------------------------------
+// Tesseract runs here (Node build, worker thread) with the bundled English model,
+// so recognition works offline and never touches the renderer's CSP.
+
+let ocrWorker = null;
+let ocrClient = null;
+
+function getOcrWorker() {
+  if (!ocrWorker) {
+    const { createWorker } = require('tesseract.js');
+    const langPath = path.join(ROOT, 'node_modules', '@tesseract.js-data', 'eng', '4.0.0_best_int');
+    ocrWorker = createWorker('eng', 1, {
+      langPath,
+      gzip: true,
+      cacheMethod: 'none',
+      logger: (m) => {
+        if (ocrClient && !ocrClient.isDestroyed()) ocrClient.send('ocr:progress', m);
+      },
+    }).catch((err) => {
+      ocrWorker = null;
+      throw err;
+    });
+  }
+  return ocrWorker;
+}
+
+ipcMain.handle('ocr:recognize', async (e, png) => {
+  const worker = await getOcrWorker();
+  ocrClient = e.sender;
+  const { data } = await worker.recognize(Buffer.from(png), {}, { blocks: true });
+  const lines = [];
+  for (const block of data.blocks || []) {
+    for (const para of block.paragraphs) {
+      for (const line of para.lines) {
+        lines.push({
+          bbox: line.bbox,
+          baseline: line.baseline,
+          words: line.words
+            .filter((w) => w.text.trim())
+            .map((w) => ({ text: w.text, bbox: w.bbox, confidence: w.confidence })),
+        });
+      }
+    }
+  }
+  return lines.filter((l) => l.words.length);
 });
 
 ipcMain.on('doc:state', (e, { dirty, title, filePath, hasDocument }) => {
@@ -269,6 +326,10 @@ if (!app.requestSingleInstanceLock()) {
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
+  });
+
+  app.on('will-quit', () => {
+    ocrWorker?.then((w) => w.terminate()).catch(() => {});
   });
 
   app.on('window-all-closed', () => {

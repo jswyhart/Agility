@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('api', {
   },
   setDocState: (state) => ipcRenderer.send('doc:state', state),
   forceClose: () => ipcRenderer.send('win:force-close'),
+  ocr: (png) => ipcRenderer.invoke('ocr:recognize', png),
+  onOcrProgress: (cb) => ipcRenderer.on('ocr:progress', (_e, m) => cb(m)),
   onMenu: (cb) => ipcRenderer.on('menu', (_e, action) => cb(action)),
   onOpenPath: (cb) => ipcRenderer.on('open-path', (_e, filePath) => cb(filePath)),
 });

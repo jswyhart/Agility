@@ -74,6 +74,9 @@ select, .pager input, .find input {
 }
 select:focus, input:focus { border-color: var(--select); }
 .props select { width: 70px; }
+#prop-family { width: 74px; }
+.btn.toggle { font-family: Georgia, serif; font-size: 15px; }
+.btn.toggle.on { background: var(--accent-soft); color: var(--accent); }
 #zoom { width: 96px; }
 .pager input { width: 44px; text-align: center; }
 .pager span { color: var(--muted); min-width: 34px; }
@@ -143,6 +146,15 @@ select:focus, input:focus { border-color: var(--select); }
 .viewer:not([data-tool="select"]) .annot { pointer-events: none; }
 .viewer[data-tool="text"] .annot.text { pointer-events: auto; }
 
+/* Edit-text mode: every editable line gets a hover target. */
+.page .edit-lines { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+.page .textline { position: absolute; pointer-events: auto; cursor: text; border-radius: 2px; }
+.page .textline:hover { outline: 1.5px solid var(--select); background: rgba(59, 130, 246, 0.08); }
+.viewer[data-tool="edittext"] .page .textline { outline: 1px dashed rgba(59, 130, 246, 0.35); }
+.viewer.text-editing .edit-lines { display: none; }
+.viewer[data-tool="edittext"] .annot.text { pointer-events: auto; cursor: text; }
+.annot.text.editing { pointer-events: auto; }
+
 /* ---- Annotations -------------------------------------------------------- */
 .annot { position: absolute; }
 .annot svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; stroke-width: initial; }
@@ -210,6 +222,23 @@ select:focus, input:focus { border-color: var(--select); }
 .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .sig-pad { background: #fff; border-radius: 8px; display: block; touch-action: none; cursor: crosshair; }
 .sig-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; color: var(--muted); }
+
+.tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+.tab {
+  background: none; border: 0; border-bottom: 2px solid transparent; padding: 6px 14px;
+  cursor: pointer; color: var(--muted); margin-bottom: -1px;
+}
+.tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.sig-name { margin-bottom: 10px; }
+.sig-fonts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 560px; }
+.sig-font {
+  background: #fff; border: 2px solid transparent; border-radius: 8px; height: 76px;
+  font-size: 34px; cursor: pointer; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding: 0 12px;
+}
+.sig-font.active { border-color: var(--accent); }
+.modal .opt { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.progress { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; width: 420px; }
+.progress > div { height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
 
 /* ---- Printing ------------------------------------------------------------ */
 #print-root { display: none; }

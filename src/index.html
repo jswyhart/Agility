@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: blob:; connect-src 'self' data: blob:" />
-  <title>Folio PDF</title>
+  <title>Agility</title>
   <link rel="stylesheet" href="styles.css" />
   <script src="../node_modules/pdf-lib/dist/pdf-lib.min.js"></script>
   <script type="module" src="app.js"></script>
@@ -19,6 +19,10 @@
       <button class="btn" data-action="save" data-needs-doc title="Save (⌘S)">
         <svg viewBox="0 0 24 24"><path d="M5 3h11l3 3v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v5h8V3M7 21v-7h10v7"/></svg>
         <span>Save</span>
+      </button>
+      <button class="btn" data-action="ocr" data-needs-edit title="Recognize text in scanned pages (⇧⌘O)">
+        <svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M8 9h8M8 12h8M8 15h5"/></svg>
+        <span>OCR</span>
       </button>
       <button class="btn icon" data-action="print" data-needs-doc title="Print (⌘P)">
         <svg viewBox="0 0 24 24"><path d="M6 9V3h12v6M6 18H4a1 1 0 0 1-1-1v-6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6a1 1 0 0 1-1 1h-2"/><path d="M6 14h12v7H6z"/></svg>
@@ -37,6 +41,9 @@
     <div class="group tools" role="radiogroup" aria-label="Tools">
       <button class="tool" data-tool="select" title="Select / move (V)">
         <svg viewBox="0 0 24 24"><path d="m4 3 7 17 2.5-7.5L21 10z"/></svg>
+      </button>
+      <button class="tool" data-tool="edittext" data-needs-edit title="Edit PDF text (X)">
+        <svg viewBox="0 0 24 24"><path d="M4 7V5h11v2M9.5 5v12M7.5 17h4"/><path d="m14 20 .5-2.5L20 12l2 2-5.5 5.5z"/></svg>
       </button>
       <button class="tool" data-tool="text" data-needs-edit title="Add text (T)">
         <svg viewBox="0 0 24 24"><path d="M5 5h14M12 5v14M9 19h6"/></svg>
@@ -81,6 +88,13 @@
         <option value="5">5 pt</option>
         <option value="8">8 pt</option>
       </select>
+      <select id="prop-family" title="Font">
+        <option value="sans">Sans</option>
+        <option value="serif">Serif</option>
+        <option value="mono">Mono</option>
+      </select>
+      <button class="btn icon toggle" id="prop-bold" title="Bold"><b>B</b></button>
+      <button class="btn icon toggle" id="prop-italic" title="Italic"><i>I</i></button>
       <select id="prop-font" title="Font size">
         <option value="10">10</option>
         <option value="12">12</option>
@@ -154,8 +168,8 @@
       <div class="welcome" id="welcome">
         <div class="welcome-card">
           <img src="logo.svg" alt="" width="72" height="72" />
-          <h1>Folio PDF</h1>
-          <p>View, annotate, sign, fill forms and rearrange pages.</p>
+          <h1>Agility</h1>
+          <p>View, edit text, annotate, sign, fill forms, OCR scans and rearrange pages.</p>
           <button class="primary" data-action="open">Open a PDF…</button>
           <p class="hint">or drop a PDF anywhere in this window</p>
         </div>
