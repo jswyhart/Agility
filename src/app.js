@@ -836,11 +836,15 @@ function measureText(el, a) {
   a.h = el.offsetHeight / state.scale;
 }
 
+// Highlights sit beneath other markup, like a highlighter pen under ink, so they
+// never block clicks on the text or shapes drawn on top of them.
+const paintOrder = (list) => [...list.filter((a) => a.type === 'highlight'), ...list.filter((a) => a.type !== 'highlight')];
+
 function renderAnnotations(i) {
   const v = state.views[i];
   if (!v) return;
   const list = annotsOf(i);
-  v.annots.replaceChildren(...list.map(annotElement).filter(Boolean));
+  v.annots.replaceChildren(...paintOrder(list).map(annotElement).filter(Boolean));
   list.forEach((a) => {
     if (a.type === 'text') measureText(v.annots.querySelector(`[data-id="${a.id}"]`), a);
   });
@@ -965,8 +969,20 @@ function onPagePointerDown(e, i) {
   if (tool === 'select') {
     if (!annotEl) return select(null);
     if (annotEl.classList.contains('editing')) return;
-    select({ page: i, id: annotEl.dataset.id });
-    if (canEdit()) startDrag(e, i, findAnnot(i, annotEl.dataset.id), e.target.classList.contains('handle') ? 'resize' : 'move');
+    // Everything stacked under the pointer, topmost first. If the selected item is
+    // among them it stays the one being dragged; clicking it again without dragging
+    // selects the next one down, so covered markup can still be reached.
+    const stack = document.elementsFromPoint(e.clientX, e.clientY)
+      .filter((el) => el.classList.contains('annot') && state.views[i].annots.contains(el));
+    const k = stack.findIndex((el) => el.dataset.id === state.selected?.id);
+    const resizing = e.target.classList.contains('handle');
+    const current = resizing || k < 0 ? annotEl : stack[k];
+    const cycle = () => {
+      if (!resizing && k >= 0 && stack.length > 1) select({ page: i, id: stack[(k + 1) % stack.length].dataset.id });
+    };
+    select({ page: i, id: current.dataset.id });
+    if (canEdit()) startDrag(e, i, findAnnot(i, current.dataset.id), resizing ? 'resize' : 'move', cycle);
+    else cycle();
     return;
   }
   if (!canEdit()) return;
@@ -1039,7 +1055,7 @@ function trackPointer(e, layer, onMove, onUp) {
   layer.addEventListener('pointercancel', up);
 }
 
-function startDrag(e, i, a, mode) {
+function startDrag(e, i, a, mode, onClick = null) {
   if (!a) return;
   e.preventDefault();
   const start = pagePoint(e, i);
@@ -1056,7 +1072,7 @@ function startDrag(e, i, a, mode) {
     else resize(a, orig, dx, dy, ev.shiftKey);
     updateAnnotElement(i, a).classList.add('selected');
   }, () => {
-    if (!moved) return;
+    if (!moved) return onClick?.();
     pushUndo(before);
     markDirty();
   });
@@ -2015,7 +2031,7 @@ async function buildOutput() {
     const segment = (a, [x1, y1], [x2, y2]) =>
       page.drawLine({ start: pt(x1, y1), end: pt(x2, y2), thickness: a.width, color: pdfColor(a.color), lineCap: LineCapStyle.Round });
 
-    for (const a of list) {
+    for (const a of paintOrder(list)) {
       switch (a.type) {
         case 'highlight':
           page.drawRectangle({ ...box(a), color: pdfColor(a.color), opacity: 0.4, blendMode: BlendMode.Multiply });
