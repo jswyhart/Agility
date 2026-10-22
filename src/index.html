@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: blob:; connect-src 'self' data: blob:" />
+  <title>Folio PDF</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="../node_modules/pdf-lib/dist/pdf-lib.min.js"></script>
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="toolbar">
+    <div class="group">
+      <button class="btn" data-action="open" title="Open (⌘O)">
+        <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        <span>Open</span>
+      </button>
+      <button class="btn" data-action="save" data-needs-doc title="Save (⌘S)">
+        <svg viewBox="0 0 24 24"><path d="M5 3h11l3 3v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v5h8V3M7 21v-7h10v7"/></svg>
+        <span>Save</span>
+      </button>
+      <button class="btn icon" data-action="print" data-needs-doc title="Print (⌘P)">
+        <svg viewBox="0 0 24 24"><path d="M6 9V3h12v6M6 18H4a1 1 0 0 1-1-1v-6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6a1 1 0 0 1-1 1h-2"/><path d="M6 14h12v7H6z"/></svg>
+      </button>
+    </div>
+    <div class="sep"></div>
+    <div class="group">
+      <button class="btn icon" data-action="undo" data-needs-doc title="Undo (⌘Z)">
+        <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg>
+      </button>
+      <button class="btn icon" data-action="redo" data-needs-doc title="Redo (⇧⌘Z)">
+        <svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/></svg>
+      </button>
+    </div>
+    <div class="sep"></div>
+    <div class="group tools" role="radiogroup" aria-label="Tools">
+      <button class="tool" data-tool="select" title="Select / move (V)">
+        <svg viewBox="0 0 24 24"><path d="m4 3 7 17 2.5-7.5L21 10z"/></svg>
+      </button>
+      <button class="tool" data-tool="text" data-needs-edit title="Add text (T)">
+        <svg viewBox="0 0 24 24"><path d="M5 5h14M12 5v14M9 19h6"/></svg>
+      </button>
+      <button class="tool" data-tool="pen" data-needs-edit title="Draw (P)">
+        <svg viewBox="0 0 24 24"><path d="M3 21c3-1 4-4 7-7l7-7a2 2 0 0 0-3-3l-7 7c-3 3-6 4-4 10z"/></svg>
+      </button>
+      <button class="tool" data-tool="highlight" data-needs-edit title="Highlight area (H)">
+        <svg viewBox="0 0 24 24"><path d="m9 11-6 6v3h3l6-6M22 12l-4.5 4.5-6-6L16 6z"/></svg>
+      </button>
+      <button class="tool" data-tool="rect" data-needs-edit title="Rectangle (R)">
+        <svg viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="1"/></svg>
+      </button>
+      <button class="tool" data-tool="ellipse" data-needs-edit title="Ellipse (E)">
+        <svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="9" ry="7"/></svg>
+      </button>
+      <button class="tool" data-tool="line" data-needs-edit title="Line (L)">
+        <svg viewBox="0 0 24 24"><path d="M4 20 20 4"/></svg>
+      </button>
+      <button class="tool" data-tool="arrow" data-needs-edit title="Arrow (A)">
+        <svg viewBox="0 0 24 24"><path d="M4 20 20 4M10 4h10v10"/></svg>
+      </button>
+      <button class="tool" data-tool="whiteout" data-needs-edit title="Whiteout (W) — covers content visually; not secure redaction">
+        <svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="1" fill="currentColor" fill-opacity=".25"/><path d="M7 10h10M7 14h6"/></svg>
+      </button>
+      <button class="tool" data-tool="image" data-needs-edit title="Insert image (I)">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5L5 20"/></svg>
+      </button>
+      <button class="tool" data-tool="signature" data-needs-edit title="Sign (S)">
+        <svg viewBox="0 0 24 24"><path d="M3 17c3 0 4-10 7-10s-1 10 2 10 3-4 5-4 1 4 4 4M3 21h18"/></svg>
+      </button>
+    </div>
+    <div class="sep"></div>
+    <div class="group props">
+      <label class="swatch" title="Color">
+        <input type="color" id="prop-color" value="#e5484d" />
+      </label>
+      <select id="prop-width" title="Stroke width">
+        <option value="1">1 pt</option>
+        <option value="2" selected>2 pt</option>
+        <option value="3">3 pt</option>
+        <option value="5">5 pt</option>
+        <option value="8">8 pt</option>
+      </select>
+      <select id="prop-font" title="Font size">
+        <option value="10">10</option>
+        <option value="12">12</option>
+        <option value="14" selected>14</option>
+        <option value="18">18</option>
+        <option value="24">24</option>
+        <option value="36">36</option>
+        <option value="48">48</option>
+      </select>
+    </div>
+    <div class="spacer"></div>
+    <div class="group">
+      <button class="btn icon" data-action="zoom-out" data-needs-doc title="Zoom out (⌘−)">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M8 11h6M21 21l-5-5"/></svg>
+      </button>
+      <select id="zoom" data-needs-doc title="Zoom">
+        <option value="fit-width">Fit width</option>
+        <option value="fit-page">Fit page</option>
+        <option value="0.5">50%</option>
+        <option value="0.75">75%</option>
+        <option value="1">100%</option>
+        <option value="1.25">125%</option>
+        <option value="1.5">150%</option>
+        <option value="2">200%</option>
+        <option value="3">300%</option>
+        <option value="4">400%</option>
+        <option value="custom" hidden>—</option>
+      </select>
+      <button class="btn icon" data-action="zoom-in" data-needs-doc title="Zoom in (⌘=)">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M8 11h6M11 8v6M21 21l-5-5"/></svg>
+      </button>
+    </div>
+    <div class="sep"></div>
+    <div class="group pager">
+      <input id="page-num" type="text" inputmode="numeric" value="–" data-needs-doc aria-label="Page number" />
+      <span id="page-count">/ 0</span>
+    </div>
+    <div class="sep"></div>
+    <div class="group find">
+      <input id="find" type="search" placeholder="Find in document" data-needs-doc />
+      <span id="find-status"></span>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-head">
+        <span>Pages</span>
+        <div>
+          <button class="btn icon small" data-action="rotate-ccw" data-needs-edit title="Rotate counterclockwise">
+            <svg viewBox="0 0 24 24"><path d="M3 4v6h6"/><path d="M3.5 15a9 9 0 1 0 2.1-9.4L3 10"/></svg>
+          </button>
+          <button class="btn icon small" data-action="rotate-cw" data-needs-edit title="Rotate clockwise">
+            <svg viewBox="0 0 24 24"><path d="M21 4v6h-6"/><path d="M20.5 15a9 9 0 1 1-2.1-9.4L21 10"/></svg>
+          </button>
+          <button class="btn icon small" data-action="insert-blank" data-needs-edit title="Insert blank page after current">
+            <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M12 10v7M8.5 13.5h7"/></svg>
+          </button>
+          <button class="btn icon small" data-action="merge" data-needs-edit title="Append pages from another PDF">
+            <svg viewBox="0 0 24 24"><path d="M8 3h8l4 4v11H8z"/><path d="M4 7v14h12"/></svg>
+          </button>
+          <button class="btn icon small danger" data-action="delete-page" data-needs-edit title="Delete current page">
+            <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="thumbs" id="thumbs"></div>
+    </aside>
+
+    <main class="viewer" id="viewer">
+      <div class="welcome" id="welcome">
+        <div class="welcome-card">
+          <img src="logo.svg" alt="" width="72" height="72" />
+          <h1>Folio PDF</h1>
+          <p>View, annotate, sign, fill forms and rearrange pages.</p>
+          <button class="primary" data-action="open">Open a PDF…</button>
+          <p class="hint">or drop a PDF anywhere in this window</p>
+        </div>
+      </div>
+      <div class="pages" id="pages"></div>
+    </main>
+  </div>
+
+  <div class="drop-overlay" id="drop-overlay"><div>Drop PDF to open</div></div>
+  <div class="toast" id="toast" role="status"></div>
+  <div class="modal-backdrop" id="modal" hidden></div>
+  <input type="file" id="image-input" accept="image/*" hidden />
+  <div id="print-root" aria-hidden="true"></div>
+</body>
+</html>
