@@ -939,9 +939,22 @@ function setTool(tool) {
   state.views.forEach((_, i) => renderEditLines(i));
 }
 
+// Begin text editing only once the click has finished. Focusing on pointerdown
+// doesn't stick: the browser moves focus again when the button is released.
+// Listening on window also catches a release outside the element that was pressed.
+function afterClick(e, fn) {
+  e.preventDefault();
+  const at = { x: e.clientX, y: e.clientY };
+  window.addEventListener('pointerup', () => setTimeout(() => fn(at)), { once: true });
+}
+
 function onPageDoubleClick(e, i) {
-  const el = e.target.closest('.annot.text');
-  if (el && state.tool === 'select' && canEdit()) editText(i, el.dataset.id, snapshot());
+  // The drag started on pointerdown captures the pointer, so the event targets the
+  // layer itself; look up what is actually under the cursor.
+  const el = document.elementFromPoint(e.clientX, e.clientY)?.closest('.annot.text');
+  if (!el || state.tool !== 'select' || !canEdit()) return;
+  const at = { x: e.clientX, y: e.clientY };
+  setTimeout(() => editText(i, el.dataset.id, snapshot(), false, at));
 }
 
 function onPagePointerDown(e, i) {
@@ -960,10 +973,9 @@ function onPagePointerDown(e, i) {
 
   if (tool === 'text') {
     if (annotEl?.classList.contains('text')) {
-      if (!annotEl.classList.contains('editing')) editText(i, annotEl.dataset.id, snapshot());
+      if (!annotEl.classList.contains('editing')) afterClick(e, (at) => editText(i, annotEl.dataset.id, snapshot(), false, at));
       return;
     }
-    e.preventDefault();
     const before = snapshot();
     const p = pagePoint(e, i);
     const size = Number(fontInput.value);
@@ -973,13 +985,14 @@ function onPagePointerDown(e, i) {
     };
     annotsOf(i).push(a);
     updateAnnotElement(i, a);
-    // Start editing once the click finishes, or the mouse release steals focus.
-    state.views[i].annots.addEventListener('pointerup', () => setTimeout(() => editText(i, a.id, before, true)), { once: true });
+    afterClick(e, () => editText(i, a.id, before, true));
     return;
   }
 
   if (tool === 'edittext') {
-    if (annotEl?.classList.contains('text') && !annotEl.classList.contains('editing')) editText(i, annotEl.dataset.id, snapshot());
+    if (annotEl?.classList.contains('text') && !annotEl.classList.contains('editing')) {
+      afterClick(e, (at) => editText(i, annotEl.dataset.id, snapshot(), false, at));
+    }
     return;
   }
 
@@ -1111,7 +1124,7 @@ function startDraw(e, i, tool) {
   });
 }
 
-function editText(i, id, before, isNew = false) {
+function editText(i, id, before, isNew = false, at = null) {
   const a = findAnnot(i, id);
   if (!a) return;
   select({ page: i, id });
@@ -1123,9 +1136,20 @@ function editText(i, id, before, isNew = false) {
   viewerEl.classList.add('text-editing');
   content.contentEditable = 'plaintext-only';
   content.focus();
-  const range = document.createRange();
-  range.selectNodeContents(content);
-  range.collapse(false);
+  // Put the caret where the user clicked; fall back to the end of the text.
+  let range = null;
+  if (at) {
+    const pos = document.caretPositionFromPoint?.(at.x, at.y);
+    if (pos && content.contains(pos.offsetNode)) {
+      range = document.createRange();
+      range.setStart(pos.offsetNode, pos.offset);
+    }
+  }
+  if (!range) {
+    range = document.createRange();
+    range.selectNodeContents(content);
+    range.collapse(false);
+  }
   getSelection().removeAllRanges();
   getSelection().addRange(range);
 
@@ -1513,9 +1537,8 @@ async function renderEditLines(i) {
     el.title = line.source === 'ocr' ? 'Recognized text — click to edit' : 'Click to edit';
     el.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
-      e.preventDefault();
       e.stopPropagation();
-      el.addEventListener('pointerup', () => setTimeout(() => beginTextEdit(i, line)), { once: true });
+      afterClick(e, (at) => beginTextEdit(i, line, at));
     });
     return el;
   }));
@@ -1571,7 +1594,7 @@ function detectFont(i, line) {
   };
 }
 
-function beginTextEdit(i, line) {
+function beginTextEdit(i, line, at = null) {
   return enqueue(async () => {
     if (!canEdit()) return;
     const colors = sampleColors(i, line.box);
@@ -1627,7 +1650,7 @@ function beginTextEdit(i, line) {
       renderEditLines(i);
       markDirty();
     }
-    editText(i, id, snapshot());
+    editText(i, id, snapshot(), false, at);
   });
 }
 
