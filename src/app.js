@@ -805,6 +805,7 @@ function annotElement(a) {
       content.style.fontSize = `${a.size * s}px`;
       content.style.padding = `${TEXT_PAD_Y}em ${TEXT_PAD_X}em`;
       content.style.color = a.color;
+      if (a.highlight) content.style.background = hexToRgba(a.highlight, 0.4);
       content.style.fontFamily = FONT_CSS[a.font || 'sans'];
       content.style.fontWeight = a.bold ? 'bold' : 'normal';
       content.style.fontStyle = a.italic ? 'italic' : 'normal';
@@ -922,9 +923,24 @@ function pagePoint(e, i) {
 
 const colorKey = (tool) => (tool === 'text' ? 'text' : tool === 'highlight' ? 'highlight' : 'shape');
 
+// With a text box selected, Highlight marks that text (or clears it) and keeps
+// the selection, instead of switching to the area-highlight tool.
+function toggleTextHighlight() {
+  const a = selectedAnnot();
+  if (a?.type !== 'text') return false;
+  pushUndo();
+  if (a.highlight) delete a.highlight;
+  else a.highlight = state.colors.highlight;
+  updateAnnotElement(state.selected.page, a).classList.add('selected');
+  markDirty();
+  toast(a.highlight ? 'Highlighted' : 'Highlight removed', { ms: 1200 });
+  return true;
+}
+
 function setTool(tool) {
   if (tool !== 'select' && !canEdit()) return;
   if (isEditable(document.activeElement)) document.activeElement.blur();
+  if (tool === 'highlight' && toggleTextHighlight()) return;
   state.tool = tool;
   if (tool !== 'image' && tool !== 'signature') state.pendingImage = null;
   viewerEl.dataset.tool = tool;
@@ -2066,6 +2082,9 @@ async function buildOutput() {
           break;
         case 'text': {
           // Anchor at the first baseline; rotating by the page rotation keeps it upright on screen.
+          if (a.highlight) {
+            page.drawRectangle({ ...box(a), color: pdfColor(a.highlight), opacity: 0.4, blendMode: BlendMode.Multiply });
+          }
           const f = await fontFor(standardFontName(a));
           const origin = pt(a.x + a.size * TEXT_PAD_X, a.y + a.size * (TEXT_PAD_Y + textBaseline(a)));
           page.drawText(encodable(f, a.text), {
