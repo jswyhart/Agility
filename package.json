@@ -2,7 +2,7 @@
   "name": "agility",
   "productName": "Agility",
   "version": "0.1.0",
-  "description": "Agility \u2014 a cross-platform desktop PDF editor: edit text, OCR scans, annotate, sign, fill forms and rearrange pages.",
+  "description": "Agility — a cross-platform desktop PDF editor: edit text, OCR scans, annotate, sign, fill forms and rearrange pages.",
   "main": "main.js",
   "license": "MIT",
   "author": "Agility",
@@ -42,6 +42,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "tabs-preload.js",
       "src/**/*",
       "package.json"
     ],

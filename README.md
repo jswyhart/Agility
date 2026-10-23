@@ -75,7 +75,7 @@ npm test        # end-to-end tests against the real app (Playwright)
 
 npm 11 may block Electron's install script. If `npm start` says Electron failed to install, run `node node_modules/electron/install.js` once.
 
-Tests launch Agility with its own profile. `AGILITY_TEST_DIR` makes save and open dialogs non-interactive, and saved files land in that folder. Fixtures live in `tests/fixtures/`.
+Set `AGILITY_APP` to a packaged app's executable to run the same tests against a build. Tests launch Agility with its own profile. `AGILITY_TEST_DIR` makes save and open dialogs non-interactive, and saved files land in that folder. Fixtures live in `tests/fixtures/`.
 
 ## Building installers
 

@@ -29,8 +29,11 @@ export async function launch({ files = [], openFiles = [], env = {}, profile } =
   const out = path.join(tmp, 'out');
   fs.mkdirSync(out);
   profile ||= path.join(tmp, 'profile');
+  // AGILITY_APP=/path/to/Agility.app/Contents/MacOS/Agility tests a packaged build.
+  const packaged = process.env.AGILITY_APP;
   const app = await electron.launch({
-    args: [ROOT, `--user-data-dir=${profile}`, ...files],
+    ...(packaged ? { executablePath: packaged } : {}),
+    args: [...(packaged ? [] : [ROOT]), `--user-data-dir=${profile}`, ...files],
     env: {
       ...process.env,
       AGILITY_TEST_DIR: out,
