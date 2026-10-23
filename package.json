@@ -2,7 +2,7 @@
   "name": "agility",
   "productName": "Agility",
   "version": "0.1.0",
-  "description": "Agility — a cross-platform desktop PDF editor: edit text, OCR scans, annotate, sign, fill forms and rearrange pages.",
+  "description": "Agility \u2014 a cross-platform desktop PDF editor: edit text, OCR scans, annotate, sign, fill forms and rearrange pages.",
   "main": "main.js",
   "license": "MIT",
   "author": "Agility",
@@ -12,7 +12,8 @@
     "dist": "electron-builder",
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
-    "dist:linux": "electron-builder --linux"
+    "dist:linux": "electron-builder --linux",
+    "test": "playwright test"
   },
   "dependencies": {
     "@fontsource/caveat": "^5.3.0",
@@ -27,6 +28,7 @@
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "electron": "^45.0.0",
     "electron-builder": "^26.15.3"
   },
