@@ -12,6 +12,8 @@ import { removeTextLine, redactText, collectGarbage } from './textedit.js';
 import { isAnnotationType, writeAnnotations, takeAnnotations } from './pdfannots.js';
 import { fontChoice, fontBytes, fontReady, captureFont, onFontLoaded } from './fonts.js';
 import { install as installPageTools, cropTo } from './pagetools.js';
+import { isEncrypted, decryptPdf } from './decrypt.js';
+import { encryptPdf } from './crypto.js';
 
 const {
   PDFDocument, StandardFonts, rgb, degrees, BlendMode, LineCapStyle,
@@ -195,13 +197,13 @@ function confirmModal(title, message, okLabel = 'Continue') {
   });
 }
 
-function passwordModal(retry) {
+function passwordModal(retry, owner = false) {
   return modal((box, close) => {
     box.innerHTML = `<h2>Password required</h2><p></p>
       <input type="password" autocomplete="off" /><div class="actions"></div>`;
     box.querySelector('p').textContent = retry
       ? 'Incorrect password. Try again.'
-      : 'This document is protected. Enter its password to open it.';
+      : owner ? 'Enter the owner password to allow editing.' : 'This document is protected. Enter its password to open it.';
     const input = box.querySelector('input');
     const submit = () => close(input.value);
     input.addEventListener('keydown', (e) => e.key === 'Enter' && submit());
@@ -247,7 +249,8 @@ function markDirty() {
 
 let recoveredVersion = 0;
 setInterval(() => {
-  if (!state.pdf || !state.dirty || state.version === recoveredVersion) return;
+  // Never write a decrypted copy of a password-protected document to disk.
+  if (!state.pdf || !state.dirty || state.version === recoveredVersion || state.protection) return;
   recoveredVersion = state.version;
   const meta = {
     filePath: state.filePath, fileName: state.fileName, pageIds: state.pageIds,
@@ -283,9 +286,9 @@ function enqueue(fn) {
 
 // ---- Loading ---------------------------------------------------------------
 
-async function loadPdfJs(bytes) {
+async function loadPdfJs(bytes, password) {
   // pdf.js transfers the buffer to its worker, so always hand it a copy.
-  const task = pdfjsLib.getDocument({ ...PDFJS_OPTIONS, data: bytes.slice() });
+  const task = pdfjsLib.getDocument({ ...PDFJS_OPTIONS, data: bytes.slice(), password });
   task.onPassword = async (updatePassword, reason) => {
     const pw = await passwordModal(reason === pdfjsLib.PasswordResponses.INCORRECT_PASSWORD);
     if (pw == null) task.destroy();
@@ -299,11 +302,46 @@ async function confirmDiscard() {
   return confirmModal('Discard unsaved changes?', 'The current document has changes that have not been saved.', 'Discard');
 }
 
+// Unlock a password-protected PDF for editing. Returns { bytes, protection }
+// (plain bytes, and how to re-protect on save), { restricted } when the
+// permissions forbid editing without the owner password, or null if cancelled.
+async function unlock(bytes, { ownerOnly = false } = {}) {
+  let res = ownerOnly ? null : await decryptPdf(bytes, '');
+  let password = '';
+  for (let retry = false; !res || (ownerOnly && !res.owner); retry = true) {
+    password = await passwordModal(retry, ownerOnly);
+    if (password == null) return null;
+    res = await decryptPdf(bytes, password);
+  }
+  if (!res.owner && !res.permissions.modify) return { restricted: true, password };
+  return { bytes: res.bytes, protection: { password, permissions: res.permissions } };
+}
+
 async function openDocument({ data, path = null, name = 'Untitled.pdf' }) {
   let bytes = new Uint8Array(data);
+  const original = bytes;
   let readOnly = false;
   let imported = null;
-  try {
+  let protection = null;
+  let viewPassword;
+  if (isEncrypted(bytes)) {
+    let unlocked;
+    try {
+      unlocked = await unlock(bytes);
+    } catch {
+      unlocked = { restricted: true }; // a security handler we can't decrypt: view only
+    }
+    if (!unlocked) return;
+    if (unlocked.restricted) {
+      readOnly = 'restricted';
+      viewPassword = unlocked.password;
+    } else {
+      bytes = unlocked.bytes;
+      protection = unlocked.protection;
+      setTimeout(() => toast('Unlocked for editing. It will be saved with the same password.', { ms: 5000 }), 300);
+    }
+  }
+  if (!readOnly) try {
     // Markup Agility saved as annotations comes back as editable objects; take it
     // out of the page so it isn't drawn twice.
     const doc = await PDFDocument.load(bytes, { updateMetadata: false });
@@ -311,12 +349,14 @@ async function openDocument({ data, path = null, name = 'Untitled.pdf' }) {
     if (imported) bytes = await doc.save();
   } catch (err) {
     readOnly = true;
-    const why = /encrypt/i.test(err.message) ? 'is encrypted' : "couldn't be parsed for editing";
-    setTimeout(() => toast(`This PDF ${why}, so it opened read-only.`, { ms: 6000 }), 300);
+    setTimeout(() => toast("This PDF couldn't be parsed for editing, so it opened read-only.", { ms: 6000 }), 300);
+  }
+  if (readOnly === 'restricted') {
+    setTimeout(() => toast("The author doesn't allow editing this PDF. Use Unlock to enter the owner password.", { ms: 7000 }), 300);
   }
   let pdf;
   try {
-    pdf = await loadPdfJs(bytes);
+    pdf = await loadPdfJs(bytes, viewPassword);
   } catch (err) {
     if (err?.name === 'PasswordException' || /destroyed/i.test(err?.message)) return;
     throw new Error(`Couldn't open “${name}”: ${err.message}`);
@@ -327,7 +367,7 @@ async function openDocument({ data, path = null, name = 'Untitled.pdf' }) {
   const annotations = {};
   imported?.forEach((list, i) => list && pageIds[i] && (annotations[pageIds[i]] = list));
   Object.assign(state, {
-    bytes, readOnly, filePath: path, fileName: name, pageIds, annotations,
+    bytes, readOnly, protection, original, filePath: path, fileName: name, pageIds, annotations,
     formValues: {}, undo: [], redo: [],
     dirty: false, selected: null, pendingImage: null, find: null, current: 0,
   });
@@ -2906,10 +2946,12 @@ function save({ saveAs = false } = {}) {
   return enqueue(async () => {
     if (!state.pdf) return false;
     if (state.readOnly) {
-      toast('This PDF is protected and can’t be saved with edits.', { error: true });
+      toast(state.readOnly === 'restricted' ? 'Editing this PDF needs the owner password (Unlock).' : 'This PDF can’t be saved with edits.', { error: true });
       return false;
     }
-    const out = await buildOutput();
+    let out = await buildOutput();
+    // Opened with a password: save it protected the same way.
+    if (state.protection) out = await encryptPdf(out, state.protection.password, null, state.protection.permissions);
     const res = !saveAs && state.filePath ? await api.write(state.filePath, out) : await api.saveAs(out, state.fileName);
     if (!res) return false;
     state.filePath = res.path;
@@ -2978,6 +3020,22 @@ const actions = {
   'toggle-comments': () => toggleComments(),
   'tool-note': () => setTool('note'),
   'tool-redact': () => setTool('redact'),
+  unlock: () => enqueue(async () => {
+    if (state.readOnly !== 'restricted') return toast('This document is already editable.');
+    const unlocked = await unlock(state.original, { ownerOnly: true });
+    if (!unlocked?.bytes) return;
+    const { filePath, fileName } = state;
+    await openDocument({ data: unlocked.bytes, path: filePath, name: fileName });
+    state.original = unlocked.bytes;
+    state.protection = unlocked.protection;
+    toast('Unlocked for editing.');
+  }),
+  'remove-password': () => {
+    if (!state.protection) return toast('This document has no password.');
+    state.protection = null;
+    markDirty();
+    toast('The password will be removed when you save.');
+  },
   'insert-date': () => startFill('date'),
   'tool-field': () => startFill('field-text'),
   'apply-redactions': () => applyRedactions(),

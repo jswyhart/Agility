@@ -43,6 +43,7 @@ Electron, [pdf.js](https://mozilla.github.io/pdf.js/) (rendering and text),
 - Page numbers, header & footer (`{page}`, `{pages}`, `{date}`, `{file}`), and watermarks.
 - *Reduce File Size* re-saves large images at a lower resolution and drops unused data.
 - *Save with Password* writes an AES-128 encrypted copy, with print, copy and edit permissions.
+- **Password-protected PDFs** (RC4, AES-128 and AES-256) open for editing after you enter the password, and are saved with the same password and permissions. If the author disallowed editing, the document stays read-only until you *Unlock* it with the owner password. *Remove Password* saves it unprotected. Decrypted copies are never written to the crash-recovery folder.
 - Export pages as PNG or JPEG, export text, and create a PDF from images.
 
 **Safety**
@@ -113,5 +114,5 @@ To build locally: `npm run dist:mac` on a Mac. Linux AppImages (`npx electron-bu
 - **Edited text gets its own font object.** A line that mixes styles takes the style of its first word. When no matching font is available, a standard font is used.
 - **Some text can't be removed.** Text inside embedded form objects, or written top-to-bottom, can't be removed in place. Edit Text covers and retypes it, and redaction rasterizes that page.
 - **Scanned edits paint over the scan.** Editing scanned text covers the old pixels and retypes the line.
-- **Encrypted PDFs open read-only.** Agility can view them but can't save edits to them. *Save with Password* protects your own copies.
+- **Certificate-encrypted PDFs are view-only.** Only password (Standard) security can be unlocked for editing.
 - **OCR is English only.** It uses the bundled English model; other languages can be added with more `@tesseract.js-data/*` packages.

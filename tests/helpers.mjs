@@ -24,7 +24,7 @@ async function getPdfjs() {
  * Launch Agility with its own profile. Save dialogs write into `out`; open
  * dialogs return `openFiles`. Returns { app, page, out, profile, close }.
  */
-export async function launch({ files = [], openFiles = [], env = {}, profile } = {}) {
+export async function launch({ files = [], openFiles = [], env = {}, profile, wait = true } = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agility-test-'));
   const out = path.join(tmp, 'out');
   fs.mkdirSync(out);
@@ -42,7 +42,8 @@ export async function launch({ files = [], openFiles = [], env = {}, profile } =
       ...env,
     },
   });
-  const page = await docTab(app, 0, { loaded: files.length > 0 });
+  // wait: false returns as soon as the tab is up (e.g. when a password prompt comes first).
+  const page = await docTab(app, 0, { loaded: wait && files.length > 0 });
   return {
     app, page, out, profile, tmp,
     close: () => app.close().catch(() => {}),
