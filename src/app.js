@@ -10,6 +10,7 @@
 import * as pdfjsLib from '../node_modules/pdfjs-dist/build/pdf.mjs';
 import { removeTextLine, redactText, collectGarbage } from './textedit.js';
 import { isAnnotationType, writeAnnotations, takeAnnotations } from './pdfannots.js';
+import { fontChoice, fontBytes, fontReady, captureFont, onFontLoaded } from './fonts.js';
 
 const {
   PDFDocument, StandardFonts, rgb, degrees, BlendMode, LineCapStyle,
@@ -84,16 +85,24 @@ const SIGNATURE_FONTS = [
   { family: 'Caveat', pkg: 'caveat' },
 ];
 
+// CSS for previewing a text box in the font it will be saved with. Fonts loaded
+// from a file already are the right weight and style, so they aren't synthesized.
+function textCss(a) {
+  const choice = fontChoice(a);
+  if (choice.family) return { fontFamily: `${choice.family}, ${FONT_CSS[a.font || 'sans']}`, fontWeight: 'normal', fontStyle: 'normal' };
+  return { fontFamily: FONT_CSS[a.font || 'sans'], fontWeight: a.bold ? 'bold' : 'normal', fontStyle: a.italic ? 'italic' : 'normal' };
+}
+
 // Distance from the top of a text box's first line to its baseline, in em, measured
 // from the browser's own layout so saved text lands exactly where it was shown.
 const baselineCache = new Map();
 function textBaseline(a) {
-  const key = `${a.font || 'sans'}|${a.bold ? 1 : 0}|${a.italic ? 1 : 0}`;
+  const css = textCss(a);
+  const key = `${css.fontFamily}|${css.fontWeight}|${css.fontStyle}`;
   if (!baselineCache.has(key)) {
     const probe = div('');
     Object.assign(probe.style, {
-      position: 'absolute', visibility: 'hidden', whiteSpace: 'pre', fontSize: '100px', lineHeight: '1.2',
-      fontFamily: FONT_CSS[a.font || 'sans'], fontWeight: a.bold ? 'bold' : 'normal', fontStyle: a.italic ? 'italic' : 'normal',
+      position: 'absolute', visibility: 'hidden', whiteSpace: 'pre', fontSize: '100px', lineHeight: '1.2', ...css,
     });
     const mark = document.createElement('span');
     Object.assign(mark.style, { display: 'inline-block', width: '1px', height: '0', verticalAlign: 'baseline' });
@@ -906,9 +915,7 @@ function annotElement(a) {
       content.style.padding = `${TEXT_PAD_Y}em ${TEXT_PAD_X}em`;
       content.style.color = a.color;
       if (a.highlight) content.style.background = hexToRgba(a.highlight, 0.4);
-      content.style.fontFamily = FONT_CSS[a.font || 'sans'];
-      content.style.fontWeight = a.bold ? 'bold' : 'normal';
-      content.style.fontStyle = a.italic ? 'italic' : 'normal';
+      Object.assign(content.style, textCss(a));
       el.style.width = el.style.height = '';
       el.append(content);
       break;
@@ -1952,10 +1959,17 @@ function beginTextEdit(i, line, at = null) {
     const style = line.source === 'pdf' ? detectFont(i, line) : { font: 'sans', bold: false, italic: false };
     const size = Math.round(line.size * 10) / 10;
     const id = uid();
-    const textAt = (text, bx, by) => ({
-      id, type: 'text', edit: true, text, size, color: colors.ink, ...style,
-      x: bx - size * TEXT_PAD_X, y: by - size * (TEXT_PAD_Y + textBaseline(style)),
-    });
+    if (line.source === 'pdf') {
+      // Reuse the document's own font when it (or the same installed font) has the characters.
+      const doc = await PDFDocument.load(state.bytes, { updateMetadata: false });
+      const { fontKey } = removeTextLine(doc, i, { x: line.x, y: line.y, dx: line.dx, dy: line.dy, length: line.length, size: line.size }, { dryRun: true });
+      style.docFont = await captureFont(doc, i, fontKey, line.text, api.findFont);
+      if (style.docFont) await fontReady(fontChoice({ ...style, text: line.text }));
+    }
+    const textAt = (text, bx, by) => {
+      const a = { id, type: 'text', edit: true, text, size, color: colors.ink, ...style };
+      return Object.assign(a, { x: bx - size * TEXT_PAD_X, y: by - size * (TEXT_PAD_Y + textBaseline(a)) });
+    };
 
     let replaced = false;
     if (line.source === 'pdf') {
@@ -2597,11 +2611,17 @@ function encodable(font, text) {
 async function buildOutput({ flatten = false } = {}) {
   if (isEditable(document.activeElement)) document.activeElement.blur();
   const doc = await PDFDocument.load(state.bytes, { updateMetadata: false });
+  doc.registerFontkit(window.fontkit);
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const fonts = new Map([['Helvetica', font]]);
-  const fontFor = async (name) => {
-    if (!fonts.has(name)) fonts.set(name, await doc.embedFont(name));
-    return fonts.get(name);
+  // The same font choice the preview uses (document font, DejaVu or standard).
+  const textFont = async (a) => {
+    const choice = fontChoice(a);
+    const key = choice.kind === 'standard' ? standardFontName(a) : choice.id || choice.name;
+    if (!fonts.has(key)) {
+      fonts.set(key, choice.kind === 'standard' ? await doc.embedFont(key) : await doc.embedFont(await fontBytes(choice), { subset: true }));
+    }
+    return fonts.get(key);
   };
 
   const entries = Object.entries(state.formValues);
@@ -2697,7 +2717,7 @@ async function buildOutput({ flatten = false } = {}) {
           if (a.highlight) {
             page.drawRectangle({ ...box(a), color: pdfColor(a.highlight), opacity: 0.4, blendMode: BlendMode.Multiply });
           }
-          const f = await fontFor(standardFontName(a));
+          const f = await textFont(a);
           const origin = pt(a.x + a.size * TEXT_PAD_X, a.y + a.size * (TEXT_PAD_Y + textBaseline(a)));
           page.drawText(encodable(f, a.text), {
             ...origin, size: a.size, font: f, color: pdfColor(a.color), lineHeight: a.size * 1.2, rotate,
@@ -2731,7 +2751,7 @@ async function buildOutput({ flatten = false } = {}) {
     if (annotationList.length) {
       await writeAnnotations({
         doc, page, vp, pt, arrowHead, encodable, textBaseline, TEXT_PAD_X, TEXT_PAD_Y,
-        fontFor: (a) => fontFor(standardFontName(a)),
+        fontFor: textFont,
       }, annotationList);
     }
   }
@@ -3029,6 +3049,10 @@ window.addEventListener('drop', (e) => {
 });
 
 api.info().then((info) => (state.userName = info.userName));
+onFontLoaded(() => {
+  baselineCache.clear();
+  state.views.forEach((_, i) => renderAnnotations(i));
+});
 
 viewerEl.dataset.tool = 'select';
 $('[data-tool="select"]').classList.add('active');

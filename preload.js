@@ -39,6 +39,9 @@ contextBridge.exposeInMainWorld('api', {
   allowWrite: (filePath) => ipcRenderer.send('recovery:allow-write', filePath),
   onRestore: on('recovery:restore'),
 
+  // Installed fonts
+  findFont: (names) => ipcRenderer.invoke('fonts:find', names),
+
   // OCR
   ocr: (png) => ipcRenderer.invoke('ocr:recognize', png),
   onOcrProgress: on('ocr:progress'),

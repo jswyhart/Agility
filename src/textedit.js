@@ -319,7 +319,7 @@ function interpret(ops, fonts, { glyphs = false } = {}) {
         Tm = mul([1, 0, 0, 1, total, 0], Tm);
         const [x1, y1] = apply(mul(Tm, gs.ctm), 0, gs.Ts);
         const size = Math.hypot(m0[2], m0[3]) * gs.Tfs;
-        runs.push({ index, x0, y0, x1, y1, total, Tfs: gs.Tfs, Th: gs.Th, size, invisible: gs.Tr === 3 || gs.Tr === 7, parts: detail });
+        runs.push({ index, x0, y0, x1, y1, total, Tfs: gs.Tfs, Th: gs.Th, size, font: gs.font, invisible: gs.Tr === 3 || gs.Tr === 7, parts: detail });
         break;
       }
     }
@@ -359,8 +359,9 @@ function readPageContent(page) {
  * Find (and unless dryRun, remove) text runs along a line.
  * target: { x, y, dx, dy, length, size } — baseline origin, unit direction and
  * length of the line in user space, plus the font size (for tolerance).
- * Returns { removed, from, to, invisible } where from/to bound the matched runs
- * along the line (relative to the target origin).
+ * Returns { removed, from, to, invisible, fontKey } where from/to bound the
+ * matched runs along the line (relative to the target origin) and fontKey is the
+ * page font resource the line starts in.
  */
 export function removeTextLine(doc, pageIndex, target, { dryRun = false } = {}) {
   const page = doc.getPage(pageIndex);
@@ -385,7 +386,8 @@ export function removeTextLine(doc, pageIndex, target, { dryRun = false } = {}) 
   const from = Math.min(...hits.map((r) => along(r.x0, r.y0)));
   const to = Math.max(...hits.map((r) => along(r.x1, r.y1)));
   const invisible = hits.every((r) => r.invisible);
-  if (dryRun) return { removed: hits.length, from, to, invisible };
+  const fontKey = hits[0].font;
+  if (dryRun) return { removed: hits.length, from, to, invisible, fontKey };
 
   // Rebuild the stream, swapping each hit for an equivalent empty move.
   const enc = new TextEncoder();
@@ -412,7 +414,7 @@ export function removeTextLine(doc, pageIndex, target, { dryRun = false } = {}) 
   }
   const ref = doc.context.register(doc.context.flateStream(out));
   page.node.set(PDFName.of('Contents'), ref);
-  return { removed: hits.length, from, to, invisible };
+  return { removed: hits.length, from, to, invisible, fontKey };
 }
 
 

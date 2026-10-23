@@ -620,6 +620,65 @@ ipcMain.on('recovery:allow-write', (e, filePath) => {
   if (filePath && tabFor(e.sender)) writablePaths.add(filePath);
 });
 
+// ---- IPC: installed fonts -----------------------------------------------------------
+// Edited text can reuse the document's font. When the PDF only embeds a subset,
+// the full font is looked up among the fonts installed on this computer.
+
+const FONT_DIRS = {
+  darwin: ['/System/Library/Fonts', '/Library/Fonts', path.join(os.homedir(), 'Library/Fonts')],
+  win32: [path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts'), path.join(os.homedir(), 'AppData/Local/Microsoft/Windows/Fonts')],
+  linux: ['/usr/share/fonts', '/usr/local/share/fonts', path.join(os.homedir(), '.fonts'), path.join(os.homedir(), '.local/share/fonts')],
+}[process.platform] || [];
+
+// "ABCDEF+Arial,Bold" / "Arial-BoldMT" / "Arial Bold" all become "arialbold".
+const normFontName = (n) => String(n || '').replace(/^[A-Z]{6}\+/, '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/(psmt|mt|ps)$/, '');
+
+let fontIndex = null;
+function getFontIndex() {
+  fontIndex ||= (async () => {
+    const cached = await readJson('font-index.json', null);
+    if (cached?.version === 1 && Date.now() - cached.built < 7 * 864e5) return cached.fonts;
+    const fontkit = require('@pdf-lib/fontkit');
+    const fonts = {};
+    const walk = async (dir, depth) => {
+      let entries;
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory() && depth < 4) await walk(full, depth + 1);
+        else if (/\.(ttf|otf)$/i.test(e.name)) {
+          try {
+            const f = fontkit.create(await fs.readFile(full));
+            for (const name of [f.postscriptName, f.fullName]) {
+              const key = normFontName(name);
+              if (key && !fonts[key]) fonts[key] = full;
+            }
+          } catch {
+            /* unreadable font file */
+          }
+        }
+      }
+    };
+    for (const dir of FONT_DIRS) await walk(dir, 0);
+    await writeJson('font-index.json', { version: 1, built: Date.now(), fonts });
+    return fonts;
+  })();
+  return fontIndex;
+}
+
+ipcMain.handle('fonts:find', async (_e, names) => {
+  const index = await getFontIndex();
+  for (const name of names) {
+    const file = index[normFontName(name)];
+    if (file) return { path: file, data: new Uint8Array(await fs.readFile(file)) };
+  }
+  return null;
+});
+
 // ---- IPC: OCR ------------------------------------------------------------------
 // Tesseract runs here (Node build, worker thread) with the bundled English model,
 // so recognition works offline and never touches the renderer's CSP.
