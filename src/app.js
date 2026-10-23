@@ -218,8 +218,38 @@ function updateUI() {
 
 function markDirty() {
   state.dirty = true;
+  state.version = (state.version || 0) + 1;
   updateUI();
 }
+
+// ---- Crash recovery -------------------------------------------------------------
+// While there are unsaved changes, a snapshot goes to the main process every few
+// seconds; it is deleted on save or close, and offered back after a crash.
+
+let recoveredVersion = 0;
+setInterval(() => {
+  if (!state.pdf || !state.dirty || state.version === recoveredVersion) return;
+  recoveredVersion = state.version;
+  const meta = {
+    filePath: state.filePath, fileName: state.fileName, pageIds: state.pageIds,
+    annotations: state.annotations, formValues: state.formValues,
+  };
+  api.saveRecovery(meta, state.bytes);
+}, 5000);
+
+api.onRestore(({ meta, bytes }) => enqueue(async () => {
+  await openDocument({ data: bytes, path: meta.filePath, name: meta.fileName || 'Untitled.pdf' });
+  if (meta.filePath) api.allowWrite(meta.filePath);
+  if (meta.pageIds?.length === state.pageIds.length) {
+    state.pageIds = meta.pageIds;
+    state.annotations = meta.annotations || {};
+    state.formValues = meta.formValues || {};
+    layoutPages();
+  }
+  if (meta.fresh) state.filePath = null;
+  markDirty();
+  if (!meta.fresh) toast('Recovered unsaved changes.', { ms: 4000 });
+}));
 
 // Serialize anything that rebuilds the document so rapid clicks can't interleave.
 let queue = Promise.resolve();
@@ -282,12 +312,6 @@ async function openDocument({ data, path = null, name = 'Untitled.pdf' }) {
   setZoom('fit-width');
   viewerEl.scrollTop = 0;
   updateUI();
-}
-
-async function openFromDialog() {
-  if (!(await confirmDiscard())) return;
-  const file = await api.openPdfDialog();
-  if (file) await openDocument(file);
 }
 
 async function openPath(filePath) {
@@ -2172,6 +2196,7 @@ function save({ saveAs = false } = {}) {
     state.filePath = res.path;
     state.fileName = res.name;
     state.dirty = false;
+    api.clearRecovery();
     updateUI();
     toast(`Saved ${res.name}`);
     return true;
@@ -2218,11 +2243,12 @@ function printDocument() {
 // ---- Wiring ---------------------------------------------------------------------------------
 
 const actions = {
-  open: () => enqueue(openFromDialog),
+  open: () => api.openFiles(),
   save: () => save(),
   'save-as': () => save({ saveAs: true }),
   'save-and-close': async () => {
     if (await save()) api.forceClose();
+    else api.closeCancelled();
   },
   merge: () => mergePdf(),
   print: () => printDocument(),
@@ -2260,6 +2286,23 @@ api.onMenu((action) => {
   actions[action]?.();
 });
 api.onOpenPath((p) => enqueue(() => openPath(p)));
+
+function renderRecent(list) {
+  const el = $('#recent');
+  el.replaceChildren();
+  if (!list?.length) return;
+  el.append(Object.assign(document.createElement('h2'), { textContent: 'Recent' }));
+  for (const p of list.slice(0, 8)) {
+    const b = Object.assign(document.createElement('button'), { className: 'recent-item', title: p });
+    const name = p.split(/[\\/]/).pop();
+    b.append(Object.assign(document.createElement('span'), { textContent: name }));
+    b.append(Object.assign(document.createElement('small'), { textContent: p.slice(0, p.length - name.length - 1) }));
+    b.addEventListener('click', () => api.openRecent(p));
+    el.append(b);
+  }
+}
+api.recent().then(renderRecent);
+api.onRecentChanged(renderRecent);
 
 document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-action]');
@@ -2402,6 +2445,8 @@ window.addEventListener('drop', (e) => {
   const file = [...e.dataTransfer.files].find((f) => /\.pdf$/i.test(f.name) || f.type === 'application/pdf');
   if (!file) return toast('Drop a PDF file to open it.', { error: true });
   const filePath = api.pathForFile(file);
+  // A tab holds one document; dropping onto a tab that has one opens a new tab.
+  if (filePath && state.pdf) return api.openFiles([filePath]);
   enqueue(async () => {
     if (filePath) return openPath(filePath);
     if (!(await confirmDiscard())) return;
