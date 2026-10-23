@@ -17,7 +17,7 @@ const deg0 = degrees(0);
 // Types written as annotations; everything else is drawn into the page.
 export function isAnnotationType(a) {
   if (a.type === 'text') return !a.edit; // edited PDF text belongs in the content
-  return ['markup', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'pen', 'note', 'redact'].includes(a.type);
+  return ['markup', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'pen', 'note', 'redact', 'mark'].includes(a.type);
 }
 
 const pdfDate = (iso) => {
@@ -118,6 +118,22 @@ export async function writeAnnotations(ctx, list) {
         }), 1);
         const subtype = { highlight: 'Highlight', underline: 'Underline', strike: 'StrikeOut' }[kind];
         add(a, subtype, rect, { QuadPoints: quads }, ops, kind === 'highlight' ? { ExtGState: { GS0: gsMultiply } } : {});
+        break;
+      }
+      case 'mark': {
+        // Checkmark / cross / dot, drawn in a 16-unit box mapped onto the mark's area.
+        const at = (u, v) => ctx.pt(a.x + (u / 16) * a.w, a.y + (v / 16) * a.h);
+        const color = rgb(...hexColor(a.color));
+        const thick = (a.w / 16) * 2;
+        const ops = [];
+        const strokes = { check: [[[2.5, 8.5], [6.5, 12.5], [13.5, 3.5]]], cross: [[[3.5, 3.5], [12.5, 12.5]], [[12.5, 3.5], [3.5, 12.5]]] }[a.kind];
+        if (a.kind === 'dot') {
+          const c = at(8, 8);
+          ops.push(...drawEllipse({ x: c.x, y: c.y, xScale: a.w / 4, yScale: a.h / 4, color, rotate: deg0 }));
+        } else {
+          for (const line of strokes) for (let k = 1; k < line.length; k++) ops.push(...drawLine({ start: at(...line[k - 1]), end: at(...line[k]), thickness: thick, color, lineCap: 1 }));
+        }
+        add(a, 'Stamp', pad(userBox(a), 1), { Name: 'Approved' }, ops);
         break;
       }
       case 'redact': {

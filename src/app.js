@@ -55,13 +55,15 @@ const italicButton = $('#prop-italic');
 const zoomSelect = $('#zoom');
 
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
-const DRAW_TOOLS = new Set(['pen', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'whiteout', 'redact']);
+const DRAW_TOOLS = new Set(['pen', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'whiteout', 'redact', 'field']);
 // Tools that mark up the document's own text by selecting it.
 const MARKUP_TOOLS = { highlight: 'highlight', underline: 'underline', strike: 'strike' };
 // Markup that lies flat on the text: it never blocks text selection, and is
 // picked by a plain click instead (see onPagePointerDown).
 const PASSIVE_TYPES = new Set(['markup', 'highlight']);
-const BOX_TYPES = new Set(['highlight', 'whiteout', 'rect', 'ellipse', 'image', 'redact']);
+const BOX_TYPES = new Set(['highlight', 'whiteout', 'rect', 'ellipse', 'image', 'redact', 'mark']);
+// Checkmark, cross and dot stamps for filling in forms, drawn in a 16×16 box.
+const MARK_PATHS = { check: 'M2.5 8.5 6.5 12.5 13.5 3.5', cross: 'M3.5 3.5 12.5 12.5M12.5 3.5 3.5 12.5' };
 const TEXT_PAD_X = 0.2; // em, must match .annot.text .content padding
 const TEXT_PAD_Y = 0.1;
 
@@ -955,6 +957,15 @@ function annotElement(a) {
     case 'redact':
       el.title = 'Marked for redaction — use Tools ▸ Apply Redactions to remove';
       break;
+    case 'mark': {
+      const svg = svgEl('svg', { viewBox: '0 0 16 16', preserveAspectRatio: 'none' });
+      if (a.kind === 'dot') svg.append(svgEl('circle', { cx: 8, cy: 8, r: 4, fill: a.color, stroke: 'none' }));
+      else svg.append(svgEl('path', { d: MARK_PATHS[a.kind], fill: 'none', stroke: a.color, 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+      el.append(svg);
+      break;
+    }
+    case 'field':
+      break; // preview while drawing a new form field
     default:
       el.append(shapeSvg(a, b));
   }
@@ -1076,6 +1087,7 @@ function setTool(tool) {
   if (tool === 'highlight' && toggleTextHighlight()) return;
   state.tool = tool;
   if (tool !== 'image' && tool !== 'signature') state.pendingImage = null;
+  if (tool !== 'stamp') state.pendingStamp = null;
   viewerEl.dataset.tool = tool;
   for (const b of document.querySelectorAll('.tool')) b.classList.toggle('active', b.dataset.tool === tool);
   if (tool !== 'select') {
@@ -1228,6 +1240,31 @@ function onPagePointerDown(e, i) {
     return;
   }
 
+  if (tool === 'stamp' && state.pendingStamp) {
+    const p = pagePoint(e, i);
+    const st = state.pendingStamp;
+    const size = Number(fontInput.value);
+    pushUndo();
+    let a;
+    if (st.type === 'text') {
+      a = { id: uid(), type: 'text', text: st.text, size, color: colorInput.value, ...state.textStyle, x: p.x - size * TEXT_PAD_X, y: p.y - size * 0.7 };
+    } else {
+      const d = Math.max(10, size * 1.1);
+      a = { id: uid(), type: 'mark', kind: st.kind, color: colorInput.value, x: p.x - d / 2, y: p.y - d / 2, w: d, h: d };
+    }
+    annotsOf(i).push(a);
+    renderAnnotations(i);
+    markDirty();
+    e.preventDefault();
+    // Marks are usually placed several at a time; a date only once.
+    if (st.type === 'text') {
+      state.pendingStamp = null;
+      setTool('select');
+      select({ page: i, id: a.id });
+    }
+    return;
+  }
+
   if (tool === 'note') {
     const p = pagePoint(e, i);
     const a = { id: uid(), type: 'note', x: p.x - 4, y: p.y - 4, w: 20, h: 20, text: '', color: '#ffd400', author: state.userName, date: new Date().toISOString(), replies: [] };
@@ -1281,7 +1318,7 @@ function translate(a, orig, dx, dy) {
 function resize(a, orig, dx, dy, free) {
   if (a.type === 'text') {
     a.size = Math.round(clamp((orig.size * (orig.w + dx)) / orig.w, 4, 400));
-  } else if (a.type === 'image' && !free) {
+  } else if ((a.type === 'image' && !free) || a.type === 'mark') {
     a.w = Math.max(8, orig.w + dx);
     a.h = a.w * (orig.h / orig.w);
   } else if (BOX_TYPES.has(a.type)) {
@@ -1381,6 +1418,10 @@ function startDraw(e, i, tool) {
     if (tooSmall || !b.w) {
       el?.remove();
       return;
+    }
+    if (tool === 'field') {
+      el?.remove();
+      return createFormField(i, a);
     }
     pushUndo();
     annotsOf(i).push(a);
@@ -1632,7 +1673,8 @@ function renderTypedSignature(text, family, color) {
 
 function openSignaturePad() {
   modal((box, close) => {
-    box.innerHTML = `<h2>Create signature</h2>
+    box.innerHTML = `<h2>Signature</h2>
+      <div class="sig-saved" hidden></div>
       <div class="tabs" role="tablist">
         <button class="tab active" data-tab="draw">Draw</button>
         <button class="tab" data-tab="type">Type</button>
@@ -1729,26 +1771,43 @@ function openSignaturePad() {
     preview();
     loadSignatureFonts().then(preview, () => toast('Signature fonts failed to load.', { error: true }));
 
-    const use = (sig) => {
+    const use = (sig, remember = false) => {
       state.pendingImage = sig;
-      state.lastSignature = sig;
+      if (remember) api.saveSignature({ ...sig, id: uid(), saved: new Date().toISOString() });
       close(true);
       toast('Click on a page to place your signature');
     };
     const submit = async () => {
+      const remember = box.querySelector('.sig-remember input').checked;
       if (tab === 'draw') {
         if (empty) return toast('Draw a signature first');
-        return use(trimCanvas(canvas));
+        return use(trimCanvas(canvas), remember);
       }
       const name = nameInput.value.trim();
       if (!name) return toast('Type your name first');
       await loadSignatureFonts().catch(() => {});
-      use(renderTypedSignature(name, family, ink()));
+      use(renderTypedSignature(name, family, ink()), remember);
     };
+
+    // Signatures saved on this computer, ready to reuse.
+    const savedEl = box.querySelector('.sig-saved');
+    const showSaved = (list) => {
+      savedEl.replaceChildren();
+      savedEl.hidden = !list.length;
+      for (const sig of list) {
+        const item = div('sig-item');
+        const img = Object.assign(document.createElement('img'), { src: sig.src, alt: 'Saved signature', title: 'Use this signature' });
+        img.addEventListener('click', () => use(sig));
+        const del = Object.assign(document.createElement('button'), { className: 'del', textContent: '×', title: 'Forget this signature' });
+        del.addEventListener('click', async () => showSaved(await api.deleteSignature(sig.id)));
+        item.append(img, del);
+        savedEl.append(item);
+      }
+    };
+    api.signatures().then(showSaved);
+
     const actions = box.querySelector('.actions');
-    if (state.lastSignature) {
-      actions.append(button('Use previous', 'secondary', () => use(state.lastSignature)));
-    }
+    actions.append(Object.assign(document.createElement('label'), { className: 'sig-remember', innerHTML: '<input type="checkbox" checked /> Remember on this computer' }));
     actions.append(
       button('Clear', 'secondary', () => {
         ctx.clearRect(0, 0, W, H);
@@ -2410,6 +2469,78 @@ function commentCard(i, a) {
   return card;
 }
 
+// ---- Fill & Sign -------------------------------------------------------------------------
+
+const fillMenu = $('#fill-menu');
+function startFill(kind) {
+  fillMenu.hidden = true;
+  if (!canEdit()) return;
+  if (kind === 'signature') return setTool('signature');
+  if (kind.startsWith('field-')) {
+    state.fieldKind = kind.slice(6);
+    setTool('field');
+    return toast('Drag on the page to place the field', { ms: 2500 });
+  }
+  setTool('stamp');
+  state.pendingStamp = kind === 'date'
+    ? { type: 'text', text: new Date().toLocaleDateString() }
+    : { type: 'mark', kind };
+  toast(kind === 'date' ? 'Click where the date goes' : 'Click to place; press Esc when done', { ms: 2500 });
+}
+
+$('#fill-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  fillMenu.hidden = !fillMenu.hidden;
+  const r = e.currentTarget.getBoundingClientRect();
+  Object.assign(fillMenu.style, { left: `${r.left}px`, top: `${r.bottom + 4}px` });
+});
+fillMenu.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-fill]');
+  if (b) startFill(b.dataset.fill);
+});
+document.addEventListener('pointerdown', (e) => {
+  if (!e.target.closest('#fill-menu, #fill-btn')) fillMenu.hidden = true;
+});
+
+// Create a real, fillable form field in the drawn box.
+async function createFormField(i, box) {
+  const kind = state.fieldKind || 'text';
+  const label = { text: 'Text field', checkbox: 'Checkbox', dropdown: 'Dropdown' }[kind];
+  const answer = await modal((m, close) => {
+    m.innerHTML = `<h2>New ${label.toLowerCase()}</h2>
+      <label class="field-row">Name <input type="text" class="f-name" /></label>
+      ${kind === 'dropdown' ? '<label class="field-row">Choices <input type="text" class="f-opts" placeholder="Red, Green, Blue" /></label>' : ''}
+      <div class="actions"></div>`;
+    const name = m.querySelector('.f-name');
+    name.value = `${label.replace(' ', '')}${Date.now() % 1000}`;
+    const submit = () => close({ name: name.value.trim(), options: (m.querySelector('.f-opts')?.value || '').split(',').map((o) => o.trim()).filter(Boolean) });
+    m.querySelectorAll('input').forEach((inp) => inp.addEventListener('keydown', (e) => e.key === 'Enter' && submit()));
+    m.querySelector('.actions').append(button('Cancel', 'secondary', () => close(null)), button('Add field', 'primary', submit));
+    setTimeout(() => name.select());
+  });
+  if (!answer?.name) return;
+  if (kind === 'dropdown' && !answer.options.length) return toast('Add at least one choice.', { error: true });
+  const vp = state.pages[i].getViewport({ scale: 1 });
+  const [x1, y1] = vp.convertToPdfPoint(box.x, box.y);
+  const [x2, y2] = vp.convertToPdfPoint(box.x + box.w, box.y + box.h);
+  const rect = { x: Math.min(x1, x2), y: Math.min(y1, y2), width: Math.abs(x2 - x1), height: Math.abs(y2 - y1) };
+  await mutateDocument(async (doc) => {
+    const form = doc.getForm();
+    let name = answer.name;
+    for (let n = 2; form.getFieldMaybe(name); n++) name = `${answer.name}${n}`;
+    const page = doc.getPage(i);
+    const look = { ...rect, borderColor: rgb(0.45, 0.45, 0.5), borderWidth: 1, backgroundColor: rgb(1, 1, 1) };
+    if (kind === 'checkbox') form.createCheckBox(name).addToPage(page, look);
+    else if (kind === 'dropdown') {
+      const field = form.createDropdown(name);
+      field.addOptions(answer.options);
+      field.addToPage(page, look);
+    } else form.createTextField(name).addToPage(page, look);
+  });
+  setTool('select');
+  toast(`Added “${answer.name}”`);
+}
+
 // ---- Form fields ---------------------------------------------------------------------
 
 async function renderForms(i) {
@@ -2687,6 +2818,17 @@ async function buildOutput({ flatten = false } = {}) {
         case 'whiteout':
           page.drawRectangle({ ...box(a), color: pdfColor(a.color || '#ffffff') });
           break;
+        case 'mark': {
+          const at = (u, v) => [a.x + (u / 16) * a.w, a.y + (v / 16) * a.h];
+          if (a.kind === 'dot') {
+            const c = pt(...at(8, 8));
+            page.drawEllipse({ x: c.x, y: c.y, xScale: a.w / 4, yScale: a.h / 4, color: pdfColor(a.color) });
+          } else {
+            const strokes = a.kind === 'check' ? [[[2.5, 8.5], [6.5, 12.5], [13.5, 3.5]]] : [[[3.5, 3.5], [12.5, 12.5]], [[12.5, 3.5], [3.5, 12.5]]];
+            for (const line of strokes) for (let k = 1; k < line.length; k++) segment({ color: a.color, width: (a.w / 16) * 2 }, at(...line[k - 1]), at(...line[k]));
+          }
+          break;
+        }
         case 'rect':
           page.drawRectangle({ ...box(a), borderColor: pdfColor(a.color), borderWidth: a.width });
           break;
@@ -2834,6 +2976,8 @@ const actions = {
   'toggle-comments': () => toggleComments(),
   'tool-note': () => setTool('note'),
   'tool-redact': () => setTool('redact'),
+  'insert-date': () => startFill('date'),
+  'tool-field': () => startFill('field-text'),
   'apply-redactions': () => applyRedactions(),
   'save-and-close': async () => {
     if (await save()) api.forceClose();

@@ -88,6 +88,9 @@
       <button class="tool" data-tool="image" data-needs-edit title="Insert image (I)">
         <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5L5 20"/></svg>
       </button>
+      <button class="btn icon" id="fill-btn" data-needs-edit title="Fill &amp; Sign: dates, checkmarks, form fields">
+        <svg viewBox="0 0 24 24"><path d="M4 20h16M6 16l9-9 3 3-9 9H6z"/><path d="m4 9 2 2 4-5"/></svg>
+      </button>
       <button class="tool" data-tool="signature" data-needs-edit title="Sign (S)">
         <svg viewBox="0 0 24 24"><path d="M3 17c3 0 4-10 7-10s-1 10 2 10 3-4 5-4 1 4 4 4M3 21h18"/></svg>
       </button>
@@ -211,6 +214,17 @@
     <button data-sel="comment" data-needs-edit title="Highlight and comment">Comment</button>
     <button data-sel="redact" data-needs-edit title="Mark for redaction">Redact</button>
     <button data-sel="copy" title="Copy (⌘C)">Copy</button>
+  </div>
+  <div class="popover" id="fill-menu" hidden>
+    <button data-fill="signature">Signature…</button>
+    <button data-fill="date">Today's date</button>
+    <button data-fill="check">✓ Checkmark</button>
+    <button data-fill="cross">✕ Cross</button>
+    <button data-fill="dot">● Dot</button>
+    <hr />
+    <button data-fill="field-text">Add text field</button>
+    <button data-fill="field-checkbox">Add checkbox field</button>
+    <button data-fill="field-dropdown">Add dropdown field</button>
   </div>
   <div class="toast" id="toast" role="status"></div>
   <div class="modal-backdrop" id="modal" hidden></div>
