@@ -11,6 +11,7 @@ import * as pdfjsLib from '../node_modules/pdfjs-dist/build/pdf.mjs';
 import { removeTextLine, redactText, collectGarbage } from './textedit.js';
 import { isAnnotationType, writeAnnotations, takeAnnotations } from './pdfannots.js';
 import { fontChoice, fontBytes, fontReady, captureFont, onFontLoaded } from './fonts.js';
+import { install as installPageTools, cropTo } from './pagetools.js';
 
 const {
   PDFDocument, StandardFonts, rgb, degrees, BlendMode, LineCapStyle,
@@ -55,7 +56,7 @@ const italicButton = $('#prop-italic');
 const zoomSelect = $('#zoom');
 
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
-const DRAW_TOOLS = new Set(['pen', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'whiteout', 'redact', 'field']);
+const DRAW_TOOLS = new Set(['pen', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'whiteout', 'redact', 'field', 'crop']);
 // Tools that mark up the document's own text by selecting it.
 const MARKUP_TOOLS = { highlight: 'highlight', underline: 'underline', strike: 'strike' };
 // Markup that lies flat on the text: it never blocks text selection, and is
@@ -965,7 +966,8 @@ function annotElement(a) {
       break;
     }
     case 'field':
-      break; // preview while drawing a new form field
+    case 'crop':
+      break; // previews while drawing a new form field or crop box
     default:
       el.append(shapeSvg(a, b));
   }
@@ -1419,9 +1421,9 @@ function startDraw(e, i, tool) {
       el?.remove();
       return;
     }
-    if (tool === 'field') {
+    if (tool === 'field' || tool === 'crop') {
       el?.remove();
-      return createFormField(i, a);
+      return tool === 'field' ? createFormField(i, a) : cropTo(i, a);
     }
     pushUndo();
     annotsOf(i).push(a);
@@ -3014,8 +3016,25 @@ const actions = {
   'tool-signature': () => setTool('signature'),
 };
 
+Object.assign(actions, installPageTools({
+  state, api, modal, button, toast, enqueue, mutateDocument, buildOutput, setTool, annotsOf, translate,
+  snapshot, pushUndo, reloadBytes, markDirty, collectGarbage, loadPdfJs, encodable, pdfColor, ocrLines,
+}));
+
+const pageMenu = $('#page-menu');
+$('#page-menu-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  pageMenu.hidden = !pageMenu.hidden;
+  const r = e.currentTarget.getBoundingClientRect();
+  Object.assign(pageMenu.style, { left: `${r.left}px`, top: `${r.bottom + 4}px` });
+});
+pageMenu.addEventListener('click', () => (pageMenu.hidden = true));
+document.addEventListener('pointerdown', (e) => {
+  if (!e.target.closest('#page-menu, #page-menu-btn')) pageMenu.hidden = true;
+});
+
 api.onMenu((action) => {
-  if (!state.pdf && !['open', 'toggle-sidebar'].includes(action)) return;
+  if (!state.pdf && !['open', 'toggle-sidebar', 'from-images'].includes(action)) return;
   actions[action]?.();
 });
 api.onOpenPath((p) => enqueue(() => openPath(p)));
@@ -3203,4 +3222,4 @@ $('[data-tool="select"]').classList.add('active');
 updateUI();
 
 // Exposed for debugging from DevTools.
-window.agility = { state, buildOutput, applyRedactions, openPath: (p) => enqueue(() => openPath(p)) };
+window.agility = { state, actions, buildOutput, applyRedactions, openPath: (p) => enqueue(() => openPath(p)) };

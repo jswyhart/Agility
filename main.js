@@ -49,6 +49,25 @@ const pendingFiles = [];
 
 const userFile = (name) => path.join(app.getPath('userData'), name);
 
+// Automated tests run without native dialogs: saves go into AGILITY_TEST_DIR,
+// "open" dialogs return the files listed in AGILITY_TEST_OPEN, and unsaved
+// changes are discarded on close.
+const TEST_DIR = process.env.AGILITY_TEST_DIR || null;
+const testOpenFiles = () => (process.env.AGILITY_TEST_OPEN || '').split(path.delimiter).filter(Boolean);
+const dialogs = {
+  async save(win, options) {
+    if (TEST_DIR) return { canceled: false, filePath: path.join(TEST_DIR, path.basename(options.defaultPath || 'Untitled.pdf')) };
+    return dialog.showSaveDialog(win, options);
+  },
+  async open(win, options) {
+    if (TEST_DIR) {
+      if (options.properties?.includes('openDirectory')) return { canceled: false, filePaths: [TEST_DIR] };
+      return { canceled: false, filePaths: testOpenFiles() };
+    }
+    return dialog.showOpenDialog(win, options);
+  },
+};
+
 function pdfArgs(argv) {
   return argv.slice(app.isPackaged ? 1 : 2).filter((a) => /\.pdf$/i.test(a) && !a.startsWith('-'));
 }
@@ -199,7 +218,7 @@ class DocWindow {
 
   // Ask about unsaved changes; returns false if the user cancelled.
   confirmClose(tab) {
-    if (!tab.doc.dirty) return 'discard';
+    if (!tab.doc.dirty || TEST_DIR) return 'discard';
     this.activate(tab);
     const choice = dialog.showMessageBoxSync(this.win, {
       type: 'warning',
@@ -294,7 +313,7 @@ function send(action) {
 }
 
 async function showOpenDialog(win) {
-  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+  const { canceled, filePaths } = await dialogs.open(win, {
     properties: ['openFile', 'multiSelections'],
     filters: [{ name: 'PDF Documents', extensions: ['pdf'] }],
   });
@@ -520,7 +539,7 @@ ipcMain.handle('pdf:read', async (_e, filePath) => {
 });
 
 ipcMain.handle('pdf:save-as', async (e, data, suggestedName) => {
-  const { canceled, filePath } = await dialog.showSaveDialog(ownerWindow(e), {
+  const { canceled, filePath } = await dialogs.save(ownerWindow(e), {
     defaultPath: suggestedName || 'Untitled.pdf',
     filters: [{ name: 'PDF Documents', extensions: ['pdf'] }],
   });
@@ -540,7 +559,7 @@ ipcMain.handle('pdf:write', async (_e, filePath, data) => {
 
 // Save any other file type (text export and the like).
 ipcMain.handle('file:save', async (e, data, suggestedName, filter) => {
-  const { canceled, filePath } = await dialog.showSaveDialog(ownerWindow(e), {
+  const { canceled, filePath } = await dialogs.save(ownerWindow(e), {
     defaultPath: suggestedName,
     filters: filter ? [filter] : [],
   });
@@ -551,7 +570,7 @@ ipcMain.handle('file:save', async (e, data, suggestedName, filter) => {
 
 // Save several files into a folder the user picks (split, image export).
 ipcMain.handle('files:save-many', async (e, files, title) => {
-  const { canceled, filePaths } = await dialog.showOpenDialog(ownerWindow(e), {
+  const { canceled, filePaths } = await dialogs.open(ownerWindow(e), {
     title: title || 'Choose a folder',
     buttonLabel: 'Save Here',
     properties: ['openDirectory', 'createDirectory'],
@@ -567,12 +586,12 @@ ipcMain.handle('files:save-many', async (e, files, title) => {
     await fs.writeFile(target, Buffer.from(f.data));
     written.push(target);
   }
-  if (written.length) shell.showItemInFolder(written[0]);
+  if (written.length && !TEST_DIR) shell.showItemInFolder(written[0]);
   return { dir, count: written.length };
 });
 
 ipcMain.handle('images:open-dialog', async (e) => {
-  const { canceled, filePaths } = await dialog.showOpenDialog(ownerWindow(e), {
+  const { canceled, filePaths } = await dialogs.open(ownerWindow(e), {
     properties: ['openFile', 'multiSelections'],
     filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] }],
   });

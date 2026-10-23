@@ -175,6 +175,9 @@
           <button class="btn icon small" data-action="merge" data-needs-edit title="Append pages from another PDF">
             <svg viewBox="0 0 24 24"><path d="M8 3h8l4 4v11H8z"/><path d="M4 7v14h12"/></svg>
           </button>
+          <button class="btn icon small" id="page-menu-btn" data-needs-doc title="More page tools">
+            <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg>
+          </button>
           <button class="btn icon small danger" data-action="delete-page" data-needs-edit title="Delete current page">
             <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14"/></svg>
           </button>
@@ -190,6 +193,7 @@
           <h1>Agility</h1>
           <p>View, edit text, annotate, sign, fill forms, OCR scans and rearrange pages.</p>
           <button class="primary" data-action="open">Open a PDF…</button>
+          <button class="secondary" data-action="from-images">Create PDF from images…</button>
           <p class="hint">or drop a PDF anywhere in this window</p>
           <div class="recent" id="recent"></div>
         </div>
@@ -214,6 +218,22 @@
     <button data-sel="comment" data-needs-edit title="Highlight and comment">Comment</button>
     <button data-sel="redact" data-needs-edit title="Mark for redaction">Redact</button>
     <button data-sel="copy" title="Copy (⌘C)">Copy</button>
+  </div>
+  <div class="popover" id="page-menu" hidden>
+    <button data-action="extract-pages">Extract pages…</button>
+    <button data-action="split">Split document…</button>
+    <button data-action="tool-crop">Crop pages…</button>
+    <hr />
+    <button data-action="page-numbers">Page numbers…</button>
+    <button data-action="header-footer">Header &amp; footer…</button>
+    <button data-action="watermark">Watermark…</button>
+    <hr />
+    <button data-action="compress">Reduce file size…</button>
+    <button data-action="save-password">Save with password…</button>
+    <button data-action="save-flattened">Save flattened copy…</button>
+    <hr />
+    <button data-action="export-images">Export pages as images…</button>
+    <button data-action="export-text">Export text…</button>
   </div>
   <div class="popover" id="fill-menu" hidden>
     <button data-fill="signature">Signature…</button>

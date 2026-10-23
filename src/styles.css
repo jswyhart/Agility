@@ -232,6 +232,18 @@ select:focus, input:focus { border-color: var(--select); }
 .annot.field { border: 1.5px dashed var(--select); background: rgba(59,130,246,0.08); }
 .viewer:is([data-tool="stamp"], [data-tool="field"]) .page { cursor: crosshair; }
 .field-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+.field-row > :first-child { min-width: 0; }
+.modal .form input[type="text"], .modal .form input[type="number"], .modal .form input[type="password"], .modal .form select {
+  height: 30px; padding: 0 8px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--border); outline: none;
+}
+.modal .form .field-row input[type="text"], .modal .form .field-row input[type="password"] { flex: 1; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 8px 0; }
+.grid3 span { color: var(--muted); font-size: 11px; }
+.grid3 input { width: 100%; height: 30px; padding: 0 8px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--border); }
+.hint-line, .muted { color: var(--muted); font-size: 12px; }
+.annot.crop { border: 1.5px dashed var(--select); box-shadow: 0 0 0 9999px rgba(0,0,0,0.35); }
+.viewer[data-tool="crop"] .page { cursor: crosshair; }
+.welcome-card .secondary { margin-left: 8px; }
 .field-row input { flex: 1; }
 .sig-saved { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .sig-saved[hidden] { display: none; }
