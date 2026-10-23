@@ -249,6 +249,10 @@ select:focus, input:focus { border-color: var(--select); }
 .popover button:hover { background: var(--panel-2); }
 .popover hr { border: 0; border-top: 1px solid var(--border); margin: 4px 2px; }
 .annot.mark svg { stroke-width: initial; }
+.page .forms .field-box { border: 1.5px solid var(--select); background: rgba(59,130,246,0.14); border-radius: 2px; cursor: pointer; overflow: hidden; }
+.page .forms .field-box span { position: absolute; left: 2px; top: -1px; font-size: 10px; color: #1d4ed8; white-space: nowrap; }
+.page .forms .field-box:hover { background: rgba(59,130,246,0.28); }
+.danger-text { color: var(--accent); }
 .annot.field { border: 1.5px dashed var(--select); background: rgba(59,130,246,0.08); }
 .viewer:is([data-tool="stamp"], [data-tool="field"]) .page { cursor: crosshair; }
 .field-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }

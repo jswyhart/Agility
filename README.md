@@ -27,6 +27,7 @@ Electron, [pdf.js](https://mozilla.github.io/pdf.js/) (rendering and text),
 - Fill form fields; add new text, checkbox and dropdown fields.
 - Signatures, drawn or typed in one of four script fonts, can be remembered on this computer.
 - Date stamps and check/cross/dot marks.
+- **Form authoring:** *Detect form fields* finds fill-in lines, boxes, checkbox squares and underscore blanks on flat forms, and names each field after its label. *Edit form fields* lets you click a field to change its name, tooltip, required/read-only, value, multi-line, max length, font size, alignment or choices, or delete it. *Tab order* orders fields by rows, by columns, or by document structure.
 
 **Redaction**
 - Mark areas (D), or select text and choose *Redact*. Then use *Tools ▸ Apply Redactions*.

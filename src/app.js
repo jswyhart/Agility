@@ -15,6 +15,7 @@ import { install as installPageTools, cropTo } from './pagetools.js';
 import { isEncrypted, decryptPdf } from './decrypt.js';
 import { encryptPdf } from './crypto.js';
 import { readOutline, writeOutline } from './outline.js';
+import { detectFields, addFields, setTabOrder, fieldInfo, applyFieldInfo } from './forms.js';
 
 const {
   PDFDocument, StandardFonts, rgb, degrees, BlendMode, LineCapStyle,
@@ -2734,6 +2735,9 @@ function startFill(kind) {
   fillMenu.hidden = true;
   if (!canEdit()) return;
   if (kind === 'signature') return setTool('signature');
+  if (kind === 'form-edit') return toggleFormEdit();
+  if (kind === 'detect-fields') return detectFormFields();
+  if (kind === 'tab-order') return chooseTabOrder();
   if (kind.startsWith('field-')) {
     state.fieldKind = kind.slice(6);
     setTool('field');
@@ -2759,6 +2763,116 @@ fillMenu.addEventListener('click', (e) => {
 document.addEventListener('pointerdown', (e) => {
   if (!e.target.closest('#fill-menu, #fill-btn')) fillMenu.hidden = true;
 });
+
+// ---- Form authoring ---------------------------------------------------------------------
+
+function toggleFormEdit(on = !state.formEdit) {
+  state.formEdit = on && canEdit();
+  document.body.classList.toggle('form-edit', state.formEdit);
+  for (const v of state.views) v.formsScale = 0;
+  scheduleRender();
+  if (state.formEdit) toast('Editing form fields: click a field for its properties. Use Fill & Sign ▸ Edit form fields again when done.', { ms: 5000 });
+}
+
+async function editFieldProperties(name) {
+  const doc = await PDFDocument.load(state.bytes, { updateMetadata: false });
+  let info;
+  try {
+    info = fieldInfo(doc, name);
+  } catch {
+    return toast(`Can't edit “${name}”.`, { error: true });
+  }
+  const isText = info.kind === 'Text';
+  const isChoice = info.kind === 'Dropdown' || info.kind === 'OptionList';
+  const next = await modal((m, close) => {
+    m.innerHTML = `<h2>Field properties</h2><p class="hint-line">${info.kind.replace(/([a-z])([A-Z])/g, '$1 $2')} field</p><div class="form">
+      <label class="field-row">Name <input type="text" class="f-name" /></label>
+      <label class="field-row">Tooltip <input type="text" class="f-tip" placeholder="Read aloud by screen readers" /></label>
+      ${isText ? `<label class="field-row">Value <input type="text" class="f-val" /></label>
+        <label class="field-row">Max length <input type="number" class="f-max" min="0" style="width:80px" /></label>
+        <label class="field-row">Font size <input type="number" class="f-size" min="0" max="72" placeholder="auto" style="width:80px" /></label>
+        <label class="field-row">Align <select class="f-align"><option value="0">Left</option><option value="1">Center</option><option value="2">Right</option></select></label>
+        <label class="opt"><input type="checkbox" class="f-multi" /> Multiple lines</label>` : ''}
+      ${isChoice ? '<label class="field-row">Choices <input type="text" class="f-opts" placeholder="One, Two, Three" /></label>' : ''}
+      ${info.kind === 'CheckBox' ? '<label class="opt"><input type="checkbox" class="f-checked" /> Checked</label>' : ''}
+      <label class="opt"><input type="checkbox" class="f-req" /> Required</label>
+      <label class="opt"><input type="checkbox" class="f-ro" /> Read-only</label>
+    </div><div class="actions"></div>`;
+    const q = (c) => m.querySelector(c);
+    q('.f-name').value = info.name;
+    q('.f-tip').value = info.tooltip;
+    q('.f-req').checked = info.required;
+    q('.f-ro').checked = info.readOnly;
+    if (isText) {
+      q('.f-val').value = info.value;
+      q('.f-max').value = info.maxLength;
+      q('.f-align').value = String(info.alignment ?? 0);
+      q('.f-multi').checked = info.multiline;
+    }
+    if (isChoice) q('.f-opts').value = info.options.join(', ');
+    if (info.kind === 'CheckBox') q('.f-checked').checked = info.value;
+    const del = button('Delete field', 'secondary danger-text', () => close({ delete: true }));
+    del.style.marginRight = 'auto';
+    m.querySelector('.actions').append(del, button('Cancel', 'secondary', () => close(null)), button('Save', 'primary', () => close({
+      kind: info.kind,
+      name: q('.f-name').value.trim() || info.name,
+      tooltip: q('.f-tip').value.trim(),
+      required: q('.f-req').checked,
+      readOnly: q('.f-ro').checked,
+      ...(isText ? { value: q('.f-val').value, maxLength: q('.f-max').value, fontSize: q('.f-size').value, alignment: q('.f-align').value, multiline: q('.f-multi').checked } : {}),
+      ...(isChoice ? { options: q('.f-opts').value.split(',').map((o) => o.trim()).filter(Boolean) } : {}),
+      ...(info.kind === 'CheckBox' ? { value: q('.f-checked').checked } : {}),
+    })));
+  });
+  if (!next) return;
+  delete state.formValues[name]; // the field's own value now comes from the dialog
+  await mutateDocument((d) => applyFieldInfo(d, name, next));
+  toast(next.delete ? `Deleted “${name}”` : 'Field updated');
+}
+
+async function detectFormFields() {
+  if (!canEdit()) return;
+  const scope = await modal((m, close) => {
+    m.innerHTML = `<h2>Detect form fields</h2><p>Finds fill-in lines, boxes and checkbox squares on flat forms and makes them fillable. Each field is named after the label next to it.</p>
+      <label class="opt"><input type="radio" name="scope" value="current" checked /> Current page</label>
+      <label class="opt"><input type="radio" name="scope" value="all" /> All pages</label><div class="actions"></div>`;
+    m.querySelector('.actions').append(button('Cancel', 'secondary', () => close(null)), button('Detect', 'primary', () => close(m.querySelector('input[name="scope"]:checked').value)));
+  });
+  if (!scope) return;
+  const pages = scope === 'all' ? state.pages.map((_, i) => i) : [state.current];
+  const doc = await PDFDocument.load(state.bytes, { updateMetadata: false });
+  const found = new Map();
+  for (const i of pages) {
+    const lines = await pageLines(i);
+    const widgets = (await state.pages[i].getAnnotations()).filter((a) => a.subtype === 'Widget')
+      .map((w) => ({ x: Math.min(w.rect[0], w.rect[2]), y: Math.min(w.rect[1], w.rect[3]), w: Math.abs(w.rect[2] - w.rect[0]), h: Math.abs(w.rect[3] - w.rect[1]) }));
+    const fields = detectFields(doc, i, lines, widgets);
+    if (fields.length) found.set(i, fields);
+  }
+  const all = [...found.values()].flat();
+  if (!all.length) return toast('No fill-in areas found.', { ms: 3000 });
+  const texts = all.filter((f) => f.kind === 'text').length;
+  const ok = await confirmModal('Add detected fields?',
+    `Found ${texts} text field${texts === 1 ? '' : 's'} and ${all.length - texts} checkbox${all.length - texts === 1 ? '' : 'es'}${all.some((f) => f.label) ? `, e.g. “${all.find((f) => f.label).label}”` : ''}. You can adjust them afterwards with Edit form fields.`, 'Add fields');
+  if (!ok) return;
+  await mutateDocument((d) => {
+    for (const [i, fields] of found) addFields(d, i, fields);
+  });
+  toast(`Added ${all.length} field${all.length === 1 ? '' : 's'}`);
+}
+
+async function chooseTabOrder() {
+  const mode = await modal((m, close) => {
+    m.innerHTML = `<h2>Tab order</h2><p>Which order Tab moves through the form fields, on every page.</p>
+      <label class="opt"><input type="radio" name="o" value="rows" checked /> By rows (left to right, top to bottom)</label>
+      <label class="opt"><input type="radio" name="o" value="columns" /> By columns (top to bottom, left to right)</label>
+      <label class="opt"><input type="radio" name="o" value="structure" /> Document structure (tagged PDFs)</label><div class="actions"></div>`;
+    m.querySelector('.actions').append(button('Cancel', 'secondary', () => close(null)), button('Apply', 'primary', () => close(m.querySelector('input[name="o"]:checked').value)));
+  });
+  if (!mode) return;
+  await mutateDocument((d) => d.getPages().forEach((_, i) => setTabOrder(d, i, mode)));
+  toast('Tab order updated');
+}
 
 // Create a real, fillable form field in the drawn box.
 async function createFormField(i, box) {
@@ -2815,6 +2929,22 @@ async function renderForms(i) {
   v.formsScale = s;
   const vp = page.getViewport({ scale: s });
   const els = [];
+  if (state.formEdit && canEdit()) {
+    // Editing the form itself: each field is a labelled box that opens its properties.
+    for (const w of v.widgets) {
+      const [ax, ay] = vp.convertToViewportPoint(w.rect[0], w.rect[1]);
+      const [bx, by] = vp.convertToViewportPoint(w.rect[2], w.rect[3]);
+      const el = div('field-box');
+      Object.assign(el.style, { left: `${Math.min(ax, bx)}px`, top: `${Math.min(ay, by)}px`, width: `${Math.abs(bx - ax)}px`, height: `${Math.abs(by - ay)}px` });
+      el.dataset.field = w.fieldName;
+      el.append(Object.assign(document.createElement('span'), { textContent: w.fieldName }));
+      el.title = `${w.fieldName} — click for properties`;
+      el.addEventListener('click', () => editFieldProperties(w.fieldName));
+      els.push(el);
+    }
+    v.forms.replaceChildren(...els);
+    return;
+  }
   for (const w of v.widgets) {
     const [ax, ay] = vp.convertToViewportPoint(w.rect[0], w.rect[1]);
     const [bx, by] = vp.convertToViewportPoint(w.rect[2], w.rect[3]);
@@ -3456,6 +3586,9 @@ const actions = {
   },
   'insert-date': () => startFill('date'),
   'tool-field': () => startFill('field-text'),
+  'form-edit': () => toggleFormEdit(),
+  'detect-fields': () => detectFormFields(),
+  'tab-order': () => chooseTabOrder(),
   'apply-redactions': () => applyRedactions(),
   'save-and-close': async () => {
     if (await save()) api.forceClose();

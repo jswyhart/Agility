@@ -236,6 +236,9 @@ const boxOf = (m, x0, y0, x1, y1) => {
 function interpret(ops, fonts, { glyphs = false } = {}) {
   const runs = [];
   runs.draws = [];
+  runs.shapes = []; // painted rectangles and straight lines: { kind: 'rect' | 'line', box, stroked }
+  let path = [];
+  let point = null;
   let gs = { ctm: [1, 0, 0, 1, 0, 0], Tc: 0, Tw: 0, Th: 1, TL: 0, font: null, Tfs: 0, Ts: 0, Tr: 0 };
   const stack = [];
   let Tm = [1, 0, 0, 1, 0, 0];
@@ -282,6 +285,25 @@ function interpret(ops, fonts, { glyphs = false } = {}) {
       case 'T*': nextLine(0, -gs.TL); break;
       case 'Do':
         if (a[0]?.name) runs.draws.push({ name: a[0].name, box: boxOf(gs.ctm, 0, 0, 1, 1) });
+        break;
+      case 're':
+        if (a.length === 4) path.push({ kind: 'rect', box: boxOf(gs.ctm, a[0], a[1], a[0] + a[2], a[1] + a[3]) });
+        break;
+      case 'm':
+        point = a.length === 2 ? a.slice() : null;
+        break;
+      case 'l':
+        if (point && a.length === 2) path.push({ kind: 'line', box: boxOf(gs.ctm, point[0], point[1], a[0], a[1]) });
+        point = a.length === 2 ? a.slice() : null;
+        break;
+      case 'S': case 's': case 'f': case 'F': case 'f*': case 'B': case 'B*': case 'b': case 'b*':
+        for (const shape of path) runs.shapes.push({ ...shape, stroked: /^[SsBb]/.test(o.op) });
+        path = [];
+        point = null;
+        break;
+      case 'n':
+        path = [];
+        point = null;
         break;
       case 'EI':
         runs.draws.push({ inline: true, box: boxOf(gs.ctm, 0, 0, 1, 1) });
@@ -506,4 +528,12 @@ export function collectGarbage(doc) {
     }
   }
   return deleted;
+}
+
+/** Painted rectangles and straight lines on a page (user space), for form detection. */
+export function pageShapes(doc, pageIndex) {
+  const page = doc.getPage(pageIndex);
+  const ops = parseOps(readPageContent(page));
+  const fonts = page.node.Resources()?.lookupMaybe(PDFName.of('Font'), PDFDict);
+  return interpret(ops, fonts).shapes;
 }
