@@ -61,7 +61,7 @@ button, select, input { font: inherit; color: inherit; }
   cursor: pointer;
 }
 .btn.icon, .tool { width: 32px; padding: 0; justify-content: center; }
-.btn.small { width: 26px; height: 26px; }
+.btn.small { width: 25px; height: 26px; }
 .btn.small svg { width: 15px; height: 15px; }
 .btn:hover:not(:disabled), .tool:hover:not(:disabled) { background: var(--panel-2); }
 .btn.danger:hover:not(:disabled) { color: var(--accent); }
@@ -91,7 +91,7 @@ select:focus, input:focus { border-color: var(--select); }
 /* ---- Workspace -------------------------------------------------------- */
 .workspace { flex: 1; display: flex; min-height: 0; }
 .sidebar {
-  width: 196px; flex: none;
+  width: 214px; flex: none;
   display: flex; flex-direction: column;
   background: var(--panel); border-right: 1px solid var(--border);
 }
