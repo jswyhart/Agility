@@ -14,6 +14,7 @@ import { fontChoice, fontBytes, fontReady, captureFont, onFontLoaded } from './f
 import { install as installPageTools, cropTo } from './pagetools.js';
 import { isEncrypted, decryptPdf } from './decrypt.js';
 import { encryptPdf } from './crypto.js';
+import { readOutline, writeOutline } from './outline.js';
 
 const {
   PDFDocument, StandardFonts, rgb, degrees, BlendMode, LineCapStyle,
@@ -58,13 +59,13 @@ const italicButton = $('#prop-italic');
 const zoomSelect = $('#zoom');
 
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
-const DRAW_TOOLS = new Set(['pen', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'whiteout', 'redact', 'field', 'crop']);
+const DRAW_TOOLS = new Set(['pen', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'whiteout', 'redact', 'field', 'crop', 'link']);
 // Tools that mark up the document's own text by selecting it.
 const MARKUP_TOOLS = { highlight: 'highlight', underline: 'underline', strike: 'strike' };
 // Markup that lies flat on the text: it never blocks text selection, and is
 // picked by a plain click instead (see onPagePointerDown).
 const PASSIVE_TYPES = new Set(['markup', 'highlight']);
-const BOX_TYPES = new Set(['highlight', 'whiteout', 'rect', 'ellipse', 'image', 'redact', 'mark']);
+const BOX_TYPES = new Set(['highlight', 'whiteout', 'rect', 'ellipse', 'image', 'redact', 'mark', 'link']);
 // Checkmark, cross and dot stamps for filling in forms, drawn in a 16×16 box.
 const MARK_PATHS = { check: 'M2.5 8.5 6.5 12.5 13.5 3.5', cross: 'M3.5 3.5 12.5 12.5M12.5 3.5 3.5 12.5' };
 const TEXT_PAD_X = 0.2; // em, must match .annot.text .content padding
@@ -403,6 +404,8 @@ async function openDocument({ data, path = null, name = 'Untitled.pdf' }) {
   const pageIds = Array.from({ length: pdf.numPages }, uid);
   const annotations = {};
   imported?.forEach((list, i) => list && pageIds[i] && (annotations[pageIds[i]] = list));
+  // Saved links remember their target page by number; map it to this session's page ids.
+  for (const a of Object.values(annotations).flat()) if (a.type === 'link' && a.pageIndex != null) a.pageId = pageIds[a.pageIndex];
   Object.assign(state, {
     bytes, readOnly, protection, original, filePath: path, fileName: name, pageIds, annotations,
     formValues: {}, undo: [], redo: [],
@@ -414,6 +417,9 @@ async function openDocument({ data, path = null, name = 'Untitled.pdf' }) {
   setTool('select');
   setZoom('fit-width');
   viewerEl.scrollTop = 0;
+  state.outline = await readOutline(pdf, pageIds);
+  state.outlineEdited = false;
+  renderBookmarks();
   updateUI();
   renderComments();
 }
@@ -657,10 +663,10 @@ function setCurrent(i) {
   if (document.activeElement !== $('#page-num')) $('#page-num').value = String(i + 1);
 }
 
-function scrollToPage(i) {
+function scrollToPage(i, top = null) {
   const v = state.views[i];
   if (!v) return;
-  viewerEl.scrollTop = v.el.offsetTop - 16;
+  viewerEl.scrollTop = v.el.offsetTop - 16 + (top ? top * state.scale : 0);
   setCurrent(i);
   scheduleRender();
 }
@@ -814,6 +820,8 @@ function snapshot() {
     bytes: state.bytes,
     pageIds: [...state.pageIds],
     annotations: structuredClone(state.annotations),
+    outline: structuredClone(state.outline || []),
+    outlineEdited: state.outlineEdited,
   };
 }
 
@@ -829,6 +837,11 @@ async function restore(snap) {
   const structural = snap.bytes !== state.bytes;
   state.pageIds = snap.pageIds;
   state.annotations = snap.annotations;
+  if (snap.outline) {
+    state.outline = snap.outline;
+    state.outlineEdited = snap.outlineEdited;
+    renderBookmarks();
+  }
   if (structural) await reloadBytes(snap.bytes);
   else state.views.forEach((_, i) => renderAnnotations(i));
 }
@@ -1116,6 +1129,9 @@ function annotElement(a) {
     case 'field':
     case 'crop':
       break; // previews while drawing a new form field or crop box
+    case 'link':
+      el.title = a.url ? `Link to ${a.url} (⌘/Ctrl-click to open)` : a.pageId ? `Link to page ${state.pageIds.indexOf(a.pageId) + 1} (⌘/Ctrl-click to follow)` : 'Link';
+      break;
     default:
       el.append(shapeSvg(a, b));
   }
@@ -1354,6 +1370,10 @@ function onPagePointerDown(e, i) {
       return textPress(e, () => select(hit ? { page: i, id: hit.id } : null));
     }
     if (annotEl.classList.contains('editing')) return;
+    if (annotEl.classList.contains('link') && (e.metaKey || e.ctrlKey)) {
+      const l = findAnnot(i, annotEl.dataset.id);
+      return followLink({ url: l?.url, pageId: l?.pageId });
+    }
     // Everything stacked under the pointer, topmost first. If the selected item is
     // among them it stays the one being dragged; clicking it again without dragging
     // selects the next one down, so covered markup can still be reached.
@@ -1571,9 +1591,9 @@ function startDraw(e, i, tool) {
       el?.remove();
       return;
     }
-    if (tool === 'field' || tool === 'crop') {
+    if (tool === 'field' || tool === 'crop' || tool === 'link') {
       el?.remove();
-      return tool === 'field' ? createFormField(i, a) : cropTo(i, a);
+      return tool === 'field' ? createFormField(i, a) : tool === 'crop' ? cropTo(i, a) : createLink(i, a);
     }
     pushUndo();
     annotsOf(i).push(a);
@@ -2787,7 +2807,9 @@ async function renderForms(i) {
   if (!v.widgets) {
     const annots = await page.getAnnotations({ intent: 'display' });
     v.widgets = annots.filter((a) => a.subtype === 'Widget' && a.fieldName && !a.hidden && !a.pushButton);
+    v.links = annots.filter((a) => a.subtype === 'Link' && (a.url || a.unsafeUrl || a.dest));
   }
+  renderLinks(i, v);
   if (state.views[i] !== v) return;
   const s = state.scale;
   v.formsScale = s;
@@ -2836,6 +2858,198 @@ async function renderForms(i) {
   }
   v.forms.replaceChildren(...els);
 }
+
+// The document's own links: clickable with the Select tool.
+function renderLinks(i, v) {
+  if (!v.linksLayer) {
+    v.linksLayer = div('links');
+    v.el.append(v.linksLayer);
+  }
+  const vp = state.pages[i].getViewport({ scale: state.scale });
+  v.linksLayer.replaceChildren(...(v.links || []).map((l) => {
+    const [ax, ay] = vp.convertToViewportPoint(l.rect[0], l.rect[1]);
+    const [bx, by] = vp.convertToViewportPoint(l.rect[2], l.rect[3]);
+    const a = document.createElement('a');
+    Object.assign(a.style, { left: `${Math.min(ax, bx)}px`, top: `${Math.min(ay, by)}px`, width: `${Math.abs(bx - ax)}px`, height: `${Math.abs(by - ay)}px` });
+    a.title = l.url || l.unsafeUrl || 'Go to page';
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      followLink({ url: l.url || l.unsafeUrl, dest: l.dest });
+    });
+    return a;
+  }));
+}
+
+async function followLink({ url, dest, pageId, top }) {
+  if (url) {
+    if (/^(https?|mailto):/i.test(url)) window.open(url, '_blank');
+    return;
+  }
+  if (pageId) {
+    const i = state.pageIds.indexOf(pageId);
+    if (i >= 0) scrollToPage(i, top);
+    return;
+  }
+  try {
+    const d = typeof dest === 'string' ? await state.pdf.getDestination(dest) : dest;
+    const i = typeof d[0] === 'number' ? d[0] : await state.pdf.getPageIndex(d[0]);
+    const y = d[1]?.name === 'XYZ' && typeof d[3] === 'number' ? state.pages[i].getViewport({ scale: 1 }).convertToViewportPoint(0, d[3])[1] : null;
+    scrollToPage(i, y);
+  } catch {
+    toast("That link's destination couldn't be found.", { error: true });
+  }
+}
+
+async function createLink(i, box) {
+  const count = state.pages.length;
+  const target = await modal((m, close) => {
+    m.innerHTML = `<h2>Add link</h2>
+      <label class="opt"><input type="radio" name="kind" value="url" checked /> Web address <input type="text" class="u" placeholder="https://example.com" style="flex:1" /></label>
+      <label class="opt"><input type="radio" name="kind" value="page" /> Page <input type="number" class="pg" min="1" max="${count}" value="1" style="width:70px" /> of ${count}</label>
+      <div class="actions"></div>`;
+    const submit = () => {
+      const kind = m.querySelector('input[name="kind"]:checked').value;
+      if (kind === 'url') {
+        let u = m.querySelector('.u').value.trim();
+        if (!u) return toast('Enter a web address', { error: true });
+        if (!/^[a-z]+:/i.test(u)) u = u.includes('@') && !u.includes('/') ? `mailto:${u}` : `https://${u}`;
+        return close({ url: u });
+      }
+      const n = Number(m.querySelector('.pg').value);
+      if (!(n >= 1 && n <= count)) return toast(`Enter a page from 1 to ${count}`, { error: true });
+      close({ pageId: state.pageIds[n - 1] });
+    };
+    m.querySelector('.u').addEventListener('focus', () => (m.querySelector('input[value="url"]').checked = true));
+    m.querySelector('.pg').addEventListener('focus', () => (m.querySelector('input[value="page"]').checked = true));
+    m.querySelectorAll('input[type="text"], input[type="number"]').forEach((inp) => inp.addEventListener('keydown', (e) => e.key === 'Enter' && submit()));
+    m.querySelector('.actions').append(button('Cancel', 'secondary', () => close(null)), button('Add link', 'primary', submit));
+    setTimeout(() => m.querySelector('.u').focus());
+  });
+  setTool('select');
+  if (!target) return;
+  pushUndo();
+  const a = { id: uid(), type: 'link', x: box.x, y: box.y, w: box.w, h: box.h, ...target };
+  annotsOf(i).push(a);
+  renderAnnotations(i);
+  select({ page: i, id: a.id });
+  markDirty();
+}
+
+// ---- Bookmarks ----------------------------------------------------------------------------
+
+const bookmarksEl = $('#bookmarks');
+let bmSelected = null;
+
+function bmFind(id, list = state.outline || [], parent = null) {
+  for (let k = 0; k < list.length; k++) {
+    if (list[k].id === id) return { node: list[k], list, index: k, parent };
+    const found = bmFind(id, list[k].children, list[k]);
+    if (found) return found;
+  }
+  return null;
+}
+
+function renderBookmarks() {
+  const rows = [];
+  const walk = (list, depth) => {
+    for (const n of list) {
+      const row = div(`bm-row${n.id === bmSelected ? ' selected' : ''}`);
+      row.style.paddingLeft = `${6 + depth * 14}px`;
+      const twisty = Object.assign(document.createElement('span'), { className: 'twisty', textContent: n.children.length ? (n.open ? '▾' : '▸') : '' });
+      twisty.addEventListener('click', (e) => {
+        e.stopPropagation();
+        n.open = !n.open;
+        renderBookmarks();
+      });
+      const title = Object.assign(document.createElement('span'), { className: 'title', textContent: n.title, title: n.title });
+      row.append(twisty, title);
+      row.addEventListener('click', () => {
+        bmSelected = n.id;
+        renderBookmarks();
+        followLink({ url: n.url, pageId: n.pageId, top: n.top });
+      });
+      row.addEventListener('dblclick', () => canEdit() && renameBookmark(n.id));
+      rows.push(row);
+      if (n.open) walk(n.children, depth + 1);
+    }
+  };
+  walk(state.outline || [], 0);
+  if (!rows.length) rows.push(Object.assign(div('bm-empty'), { textContent: 'No bookmarks yet. Use + to bookmark the current page.' }));
+  bookmarksEl.replaceChildren(...rows);
+}
+
+function editOutline(change) {
+  pushUndo();
+  change();
+  state.outlineEdited = true;
+  markDirty();
+  renderBookmarks();
+}
+
+function renameBookmark(id) {
+  const el = [...bookmarksEl.querySelectorAll('.bm-row')].find((r) => r.classList.contains('selected'))?.querySelector('.title');
+  const found = bmFind(id);
+  if (!el || !found) return;
+  const before = snapshot();
+  el.contentEditable = 'plaintext-only';
+  el.focus();
+  getSelection().selectAllChildren(el);
+  el.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter' || e.key === 'Escape') {
+      e.preventDefault();
+      el.blur();
+    }
+  });
+  el.addEventListener('blur', () => {
+    const title = el.innerText.trim() || found.node.title;
+    if (title !== found.node.title) {
+      pushUndo(before);
+      found.node.title = title;
+      state.outlineEdited = true;
+      markDirty();
+    }
+    renderBookmarks();
+  }, { once: true });
+}
+
+document.querySelector('.sidebar').addEventListener('click', (e) => {
+  const tab = e.target.closest('[data-side]');
+  if (tab) {
+    document.querySelectorAll('.side-tab').forEach((t) => t.classList.toggle('active', t === tab));
+    document.querySelectorAll('.sidebar [data-pane]').forEach((p) => (p.hidden = p.dataset.pane !== tab.dataset.side));
+    return;
+  }
+  const b = e.target.closest('[data-bm]');
+  if (!b || b.disabled || !canEdit()) return;
+  const found = bmSelected && bmFind(bmSelected);
+  const op = b.dataset.bm;
+  if (op === 'add') {
+    const node = { id: uid(), title: `Page ${state.current + 1}`, pageId: state.pageIds[state.current], top: null, open: true, children: [] };
+    editOutline(() => {
+      if (found) found.list.splice(found.index + 1, 0, node);
+      else (state.outline ||= []).push(node);
+    });
+    bmSelected = node.id;
+    renderBookmarks();
+    return renameBookmark(node.id);
+  }
+  if (!found) return toast('Select a bookmark first');
+  const { list, index, node, parent } = found;
+  if (op === 'delete') editOutline(() => list.splice(index, 1));
+  if (op === 'up' && index > 0) editOutline(() => list.splice(index - 1, 0, ...list.splice(index, 1)));
+  if (op === 'down' && index < list.length - 1) editOutline(() => list.splice(index + 1, 0, ...list.splice(index, 1)));
+  if (op === 'indent' && index > 0) editOutline(() => {
+    list.splice(index, 1);
+    list[index - 1].children.push(node);
+    list[index - 1].open = true;
+  });
+  if (op === 'outdent' && parent) editOutline(() => {
+    const up = bmFind(parent.id);
+    list.splice(index, 1);
+    up.list.splice(up.index + 1, 0, node);
+  });
+});
 
 function setFormValue(key, value, source) {
   state.formValues[key] = value;
@@ -3009,6 +3223,10 @@ async function buildOutput({ flatten = false } = {}) {
     }
   }
 
+  if (state.outlineEdited) {
+    writeOutline(doc, state.outline, state.pageIds, state.pages.map((p) => p.getViewport({ scale: 1 })));
+  }
+
   const images = new Map();
   const embed = async (src) => {
     if (!images.has(src)) images.set(src, await (src.startsWith('data:image/jpeg') ? doc.embedJpg(src) : doc.embedPng(src)));
@@ -3132,6 +3350,8 @@ async function buildOutput({ flatten = false } = {}) {
     if (annotationList.length) {
       await writeAnnotations({
         doc, page, vp, pt, arrowHead, encodable, textBaseline, layoutLines, TEXT_PAD_X, TEXT_PAD_Y,
+        pageIndexOf: (id) => state.pageIds.indexOf(id), pageRef: (k) => pages[k]?.ref,
+        viewportOf: (k) => state.pages[k]?.getViewport({ scale: 1 }),
         fontFor: textFont,
       }, annotationList);
     }

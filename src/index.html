@@ -85,6 +85,9 @@
       <button class="tool" data-tool="redact" data-needs-edit title="Mark for redaction (D)">
         <svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="1" fill="currentColor"/><path d="M6 21h12" /></svg>
       </button>
+      <button class="tool" data-tool="link" data-needs-edit title="Add a link (drag an area)">
+        <svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>
+      </button>
       <button class="tool" data-tool="image" data-needs-edit title="Insert image (I)">
         <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5L5 20"/></svg>
       </button>
@@ -160,8 +163,12 @@
 
   <div class="workspace">
     <aside class="sidebar" id="sidebar">
-      <div class="sidebar-head">
-        <span>Pages</span>
+      <div class="side-tabs">
+        <button class="side-tab active" data-side="pages">Pages</button>
+        <button class="side-tab" data-side="bookmarks" data-needs-doc>Bookmarks</button>
+      </div>
+      <div class="sidebar-head" data-pane="pages">
+        <span></span>
         <div>
           <button class="btn icon small" data-action="rotate-ccw" data-needs-edit title="Rotate counterclockwise">
             <svg viewBox="0 0 24 24"><path d="M3 4v6h6"/><path d="M3.5 15a9 9 0 1 0 2.1-9.4L3 10"/></svg>
@@ -183,7 +190,19 @@
           </button>
         </div>
       </div>
-      <div class="thumbs" id="thumbs"></div>
+      <div class="thumbs" id="thumbs" data-pane="pages"></div>
+      <div class="sidebar-head" data-pane="bookmarks" hidden>
+        <span></span>
+        <div>
+          <button class="btn icon small" data-bm="add" data-needs-edit title="Add a bookmark for this page">+</button>
+          <button class="btn icon small" data-bm="outdent" data-needs-edit title="Move out a level">⇤</button>
+          <button class="btn icon small" data-bm="indent" data-needs-edit title="Move in a level">⇥</button>
+          <button class="btn icon small" data-bm="up" data-needs-edit title="Move up">↑</button>
+          <button class="btn icon small" data-bm="down" data-needs-edit title="Move down">↓</button>
+          <button class="btn icon small danger" data-bm="delete" data-needs-edit title="Delete bookmark">×</button>
+        </div>
+      </div>
+      <div class="bookmarks" id="bookmarks" data-pane="bookmarks" hidden></div>
     </aside>
 
     <main class="viewer" id="viewer">

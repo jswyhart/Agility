@@ -17,7 +17,7 @@ const deg0 = degrees(0);
 // Types written as annotations; everything else is drawn into the page.
 export function isAnnotationType(a) {
   if (a.type === 'text') return !a.edit; // edited PDF text belongs in the content
-  return ['markup', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'pen', 'note', 'redact', 'mark'].includes(a.type);
+  return ['markup', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'pen', 'note', 'redact', 'mark', 'link'].includes(a.type);
 }
 
 const pdfDate = (iso) => {
@@ -134,6 +134,16 @@ export async function writeAnnotations(ctx, list) {
           for (const line of strokes) for (let k = 1; k < line.length; k++) ops.push(...drawLine({ start: at(...line[k - 1]), end: at(...line[k]), thickness: thick, color, lineCap: 1 }));
         }
         add(a, 'Stamp', pad(userBox(a), 1), { Name: 'Approved' }, ops);
+        break;
+      }
+      case 'link': {
+        // A plain Link annotation (no border); the target page is stored by number.
+        const b = userBox(a);
+        const extra = { Border: [0, 0, 0] };
+        if (a.url) extra.A = { S: 'URI', URI: PDFString.of(a.url) };
+        const k = a.pageId ? ctx.pageIndexOf(a.pageId) : -1;
+        if (k >= 0) extra.Dest = [ctx.pageRef(k), PDFName.of('XYZ'), null, null, null];
+        add({ ...a, pageIndex: k >= 0 ? k : undefined, color: null }, 'Link', b, extra, []);
         break;
       }
       case 'redact': {
