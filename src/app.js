@@ -54,6 +54,11 @@ const zoomSelect = $('#zoom');
 
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
 const DRAW_TOOLS = new Set(['pen', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'whiteout']);
+// Tools that mark up the document's own text by selecting it.
+const MARKUP_TOOLS = { highlight: 'highlight', underline: 'underline', strike: 'strike' };
+// Markup that lies flat on the text: it never blocks text selection, and is
+// picked by a plain click instead (see onPagePointerDown).
+const PASSIVE_TYPES = new Set(['markup', 'highlight']);
 const BOX_TYPES = new Set(['highlight', 'whiteout', 'rect', 'ellipse', 'image']);
 const TEXT_PAD_X = 0.2; // em, must match .annot.text .content padding
 const TEXT_PAD_Y = 0.1;
@@ -115,7 +120,7 @@ const state = {
   zoomMode: 'fit-width',
   current: 0,
   tool: 'select',
-  colors: { shape: '#e5484d', text: '#1a1a1a', highlight: '#ffd400' },
+  colors: { shape: '#e5484d', text: '#1a1a1a', highlight: '#ffd400', underline: '#1a9f4b', strike: '#e5484d' },
   textStyle: { font: 'sans', bold: false, italic: false },
   selected: null, // { page, id }
   pendingImage: null,
@@ -354,14 +359,17 @@ function buildPages() {
   state.views = state.pages.map((_, i) => {
     const el = div('page');
     const canvas = Object.assign(document.createElement('canvas'), { className: 'render' });
+    const text = div('textLayer');
     const hits = div('hits');
     const annots = div('annots');
     const forms = div('forms');
-    el.append(canvas, hits, annots, forms);
+    el.append(canvas, text, hits, annots, forms);
     pagesEl.append(el);
-    annots.addEventListener('pointerdown', (e) => onPagePointerDown(e, i));
-    annots.addEventListener('dblclick', (e) => onPageDoubleClick(e, i));
-    return { el, canvas, hits, annots, forms, renderedScale: 0, task: null, widgets: null };
+    // Listen on the page itself: with the Select and markup tools the annotation
+    // layer lets presses through to the text layer so text can be selected.
+    el.addEventListener('pointerdown', (e) => onPagePointerDown(e, i));
+    el.addEventListener('dblclick', (e) => onPageDoubleClick(e, i));
+    return { el, canvas, text, hits, annots, forms, renderedScale: 0, textScale: 0, task: null, widgets: null };
   });
 }
 
@@ -370,6 +378,7 @@ function layoutPages() {
     const vp = baseViewport(i);
     v.el.style.width = `${vp.width * state.scale}px`;
     v.el.style.height = `${vp.height * state.scale}px`;
+    v.el.style.setProperty('--total-scale-factor', state.scale);
     renderAnnotations(i);
     renderForms(i);
     drawHits(i);
@@ -399,6 +408,7 @@ function renderVisible() {
     const r = v.el.getBoundingClientRect();
     if (r.bottom < vr.top - vr.height || r.top > vr.bottom + vr.height) return;
     if (v.renderedScale !== state.scale) renderPage(i);
+    else if (v.textScale !== state.scale && !v.task) renderTextLayer(i, state.scale);
   });
 }
 
@@ -427,12 +437,55 @@ async function renderPage(i) {
     await task.promise;
     v.canvas.replaceWith(canvas);
     v.canvas = canvas;
+    if (v.textScale !== scale) renderTextLayer(i, scale);
   } catch (err) {
     if (!(err instanceof pdfjsLib.RenderingCancelledException)) console.error(err);
     if (v.renderedScale === scale && v.task === task) v.renderedScale = 0;
   } finally {
     if (v.task === task) v.task = null;
   }
+}
+
+// Selectable text: pdf.js lays transparent spans over the glyphs; recognized
+// (OCR) words get the same treatment so scanned pages can be selected too.
+async function renderTextLayer(i, scale) {
+  const v = state.views[i];
+  const page = state.pages[i];
+  v.textScale = scale;
+  v.textLayer?.cancel();
+  const container = div('textLayer');
+  const layer = new pdfjsLib.TextLayer({
+    textContentSource: page.streamTextContent({ includeMarkedContent: true }),
+    container,
+    viewport: page.getViewport({ scale }),
+  });
+  v.textLayer = layer;
+  try {
+    await layer.render();
+  } catch {
+    return; // superseded by a newer render
+  }
+  if (state.views[i] !== v || v.textLayer !== layer) return;
+  addOcrSpans(i, container, scale);
+  container.append(div('endOfContent'));
+  v.text.replaceWith(container);
+  v.text = container;
+}
+
+function addOcrSpans(i, container, scale) {
+  for (const a of annotsOf(i)) {
+    if (a.type !== 'ocrtext') continue;
+    const span = Object.assign(document.createElement('span'), { className: 'ocr', textContent: `${a.text} ` });
+    Object.assign(span.style, {
+      left: `${a.x * scale}px`, top: `${a.y * scale}px`, fontSize: `${a.h * scale * 0.9}px`, width: `${a.w * scale}px`,
+    });
+    container.append(span);
+  }
+}
+
+function refreshTextLayers() {
+  state.views.forEach((v) => (v.textScale = 0));
+  scheduleRender();
 }
 
 function updateCurrentPage() {
@@ -662,7 +715,14 @@ function rotatePoint([x, y], W, H, dir) {
 
 function rotateAnnotation(a, W, H, dir) {
   const rp = (p) => rotatePoint(p, W, H, dir);
-  if (a.type === 'pen') {
+  if (a.type === 'markup') {
+    a.rects = a.rects.map((r) => {
+      const [x1, y1] = rp([r.x, r.y]);
+      const [x2, y2] = rp([r.x + r.w, r.y + r.h]);
+      return { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) };
+    });
+    a.vertical = !a.vertical;
+  } else if (a.type === 'pen') {
     a.points = a.points.map(rp);
   } else if (a.type === 'line' || a.type === 'arrow') {
     [a.x1, a.y1] = rp([a.x1, a.y1]);
@@ -775,6 +835,7 @@ function bounds(a) {
     const y = Math.min(...ys) - pad;
     return { x, y, w: Math.max(...xs) + pad - x, h: Math.max(...ys) + pad - y };
   }
+  if (a.type === 'markup') return unionBox(a.rects);
   if (a.type === 'rect' || a.type === 'ellipse') {
     const pad = a.width / 2 + 1;
     return { x: a.x - pad, y: a.y - pad, w: a.w + pad * 2, h: a.h + pad * 2 };
@@ -850,6 +911,17 @@ function annotElement(a) {
     case 'highlight':
       el.style.background = hexToRgba(a.color, 0.4);
       break;
+    case 'markup':
+      for (const r of a.rects) {
+        const part = div(`mark ${a.kind}`);
+        Object.assign(part.style, {
+          left: `${(r.x - b.x) * s}px`, top: `${(r.y - b.y) * s}px`, width: `${r.w * s}px`, height: `${r.h * s}px`,
+        });
+        if (a.kind === 'highlight') part.style.background = hexToRgba(a.color, 0.4);
+        else part.style.setProperty('--mark-color', a.color);
+        el.append(part);
+      }
+      break;
     case 'whiteout':
       el.style.background = a.color || '#fff';
       break;
@@ -857,6 +929,7 @@ function annotElement(a) {
       el.append(shapeSvg(a, b));
   }
   if (BOX_TYPES.has(a.type) || a.type === 'text') el.append(div('handle'));
+  if (a.type === 'markup' && a.note) el.title = a.note;
   return el;
 }
 
@@ -950,7 +1023,7 @@ function pagePoint(e, i) {
   return { x: (e.clientX - r.left) / state.scale, y: (e.clientY - r.top) / state.scale };
 }
 
-const colorKey = (tool) => (tool === 'text' ? 'text' : tool === 'highlight' ? 'highlight' : 'shape');
+const colorKey = (tool) => (['text', 'highlight', 'underline', 'strike'].includes(tool) ? tool : 'shape');
 
 // With a text box selected, Highlight marks that text (or clears it) and keeps
 // the selection, instead of switching to the area-highlight tool.
@@ -1048,13 +1121,43 @@ function onPageDoubleClick(e, i) {
   setTimeout(() => editText(i, el.dataset.id, snapshot(), false, at, 2));
 }
 
+// Topmost flat markup (text markup or area highlight) under a page point.
+function passiveAt(i, p) {
+  return [...paintOrder(annotsOf(i))].reverse().find((a) => {
+    if (!PASSIVE_TYPES.has(a.type)) return false;
+    const boxes = a.type === 'markup' ? a.rects : [a];
+    return boxes.some((r) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y - 2 && p.y <= r.y + r.h + 2);
+  });
+}
+
+// Let a press start a native text selection; if it turns out to be a plain click
+// (no drag, nothing selected), run onClick instead.
+function textPress(e, onClick) {
+  const x0 = e.clientX;
+  const y0 = e.clientY;
+  window.addEventListener('pointerup', (ev) => {
+    const still = Math.hypot(ev.clientX - x0, ev.clientY - y0) < 4;
+    if (still && getSelection().isCollapsed) onClick?.();
+  }, { once: true });
+}
+
 function onPagePointerDown(e, i) {
   if (e.button !== 0 || !state.pdf) return;
+  if (e.target.closest('.forms > *, .edit-lines')) return;
   const annotEl = e.target.closest('.annot');
   const tool = state.tool;
+  // A glyph span, not just the text layer (which covers the whole page).
+  const onText = !!e.target.closest('.textLayer span');
 
   if (tool === 'select') {
-    if (!annotEl) return select(null);
+    if (!annotEl) {
+      // Flat markup: an already-selected area highlight can be dragged; otherwise
+      // the press selects text, and a plain click selects the markup under it.
+      // (Text markup follows its text, so it never moves.)
+      const hit = passiveAt(i, pagePoint(e, i));
+      if (hit?.type === 'highlight' && hit.id === state.selected?.id && canEdit()) return startDrag(e, i, hit, 'move');
+      return textPress(e, () => select(hit ? { page: i, id: hit.id } : null));
+    }
     if (annotEl.classList.contains('editing')) return;
     // Everything stacked under the pointer, topmost first. If the selected item is
     // among them it stays the one being dragged; clicking it again without dragging
@@ -1106,11 +1209,22 @@ function onPagePointerDown(e, i) {
     return;
   }
 
+  if (MARKUP_TOOLS[tool]) {
+    // Over text, the press selects text and the markup is applied on release;
+    // elsewhere the highlighter falls back to drawing a box.
+    if (onText) {
+      window.addEventListener('pointerup', () => setTimeout(() => applyTextMarkup(MARKUP_TOOLS[tool])), { once: true });
+      return;
+    }
+    if (tool !== 'highlight') return;
+  }
+
   if (DRAW_TOOLS.has(tool)) startDraw(e, i, tool);
 }
 
 function translate(a, orig, dx, dy) {
-  if (a.type === 'pen') a.points = orig.points.map(([x, y]) => [x + dx, y + dy]);
+  if (a.type === 'markup') a.rects = orig.rects.map((r) => ({ ...r, x: r.x + dx, y: r.y + dy }));
+  else if (a.type === 'pen') a.points = orig.points.map(([x, y]) => [x + dx, y + dy]);
   else if (a.type === 'line' || a.type === 'arrow') {
     Object.assign(a, { x1: orig.x1 + dx, y1: orig.y1 + dy, x2: orig.x2 + dx, y2: orig.y2 + dy });
   } else Object.assign(a, { x: orig.x + dx, y: orig.y + dy });
@@ -1149,7 +1263,7 @@ function startDrag(e, i, a, mode, onClick = null) {
   const before = snapshot();
   const orig = structuredClone(a);
   let moved = false;
-  trackPointer(e, state.views[i].annots, (ev) => {
+  trackPointer(e, state.views[i].el, (ev) => {
     const p = pagePoint(ev, i);
     const dx = p.x - start.x;
     const dy = p.y - start.y;
@@ -1178,7 +1292,7 @@ function startDraw(e, i, tool) {
 
   const layer = state.views[i].annots;
   let el = null;
-  trackPointer(e, layer, (ev) => {
+  trackPointer(e, state.views[i].el, (ev) => {
     const p = pagePoint(ev, i);
     p.x = clamp(p.x, 0, W);
     p.y = clamp(p.y, 0, H);
@@ -1276,6 +1390,105 @@ function editText(i, id, before, isNew = false, at = null, clicks = pendingEdit?
     if (state.selected) select(state.selected);
   }, { once: true });
 }
+
+// ---- Text selection and markup -----------------------------------------------------
+
+// The current text selection as line boxes per page (page units at scale 1).
+function selectionByPage() {
+  const sel = getSelection();
+  if (!sel.rangeCount || sel.isCollapsed) return [];
+  const range = sel.getRangeAt(0);
+  const root = range.commonAncestorContainer.nodeType === Node.TEXT_NODE ? range.commonAncestorContainer.parentNode : range.commonAncestorContainer;
+  const pages = new Map();
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = root.nodeType === Node.TEXT_NODE ? root : walker.nextNode(); node; node = walker.nextNode()) {
+    if (!range.intersectsNode(node) || !node.parentElement?.closest('.textLayer')) continue;
+    const pageEl = node.parentElement.closest('.page');
+    const i = state.views.findIndex((v) => v.el === pageEl);
+    if (i < 0) continue;
+    const part = document.createRange();
+    part.selectNodeContents(node);
+    if (node === range.startContainer) part.setStart(node, range.startOffset);
+    if (node === range.endContainer) part.setEnd(node, range.endOffset);
+    const pr = pageEl.getBoundingClientRect();
+    for (const r of part.getClientRects()) {
+      if (r.width < 0.5 || r.height < 0.5) continue;
+      if (!pages.has(i)) pages.set(i, []);
+      pages.get(i).push({ x: (r.left - pr.left) / state.scale, y: (r.top - pr.top) / state.scale, w: r.width / state.scale, h: r.height / state.scale });
+    }
+  }
+  return [...pages].map(([page, rects]) => ({ page, rects: mergeLineRects(rects) }));
+}
+
+// Join the per-span boxes of each line into one box per line.
+function mergeLineRects(rects) {
+  const lines = [];
+  for (const r of [...rects].sort((p, q) => p.y - q.y || p.x - q.x)) {
+    const line = lines.find((l) => {
+      const overlap = Math.min(l.y + l.h, r.y + r.h) - Math.max(l.y, r.y);
+      return overlap > Math.min(l.h, r.h) * 0.5 && r.x <= l.x + l.w + Math.max(l.h, r.h) * 1.2 && r.x + r.w >= l.x - Math.max(l.h, r.h) * 1.2;
+    });
+    if (line) Object.assign(line, unionBox([line, r]));
+    else lines.push({ ...r });
+  }
+  return lines;
+}
+
+function applyTextMarkup(kind) {
+  if (!canEdit()) return false;
+  const parts = selectionByPage();
+  if (!parts.length) return false;
+  const text = getSelection().toString().trim();
+  pushUndo();
+  let last = null;
+  for (const { page, rects } of parts) {
+    last = { page, id: uid() };
+    annotsOf(page).push({ id: last.id, type: 'markup', kind, color: state.colors[kind], rects, text, author: state.userName, date: new Date().toISOString() });
+    renderAnnotations(page);
+  }
+  getSelection().removeAllRanges();
+  hideSelectionPopup();
+  markDirty();
+  if (state.tool === 'select') select(last);
+  return true;
+}
+
+const selPopup = $('#sel-popup');
+function hideSelectionPopup() {
+  selPopup.hidden = true;
+}
+
+function showSelectionPopup() {
+  const sel = getSelection();
+  if (!state.pdf || sel.isCollapsed || !sel.rangeCount || state.tool !== 'select') return hideSelectionPopup();
+  const node = sel.focusNode?.parentElement;
+  if (!node?.closest('.textLayer')) return hideSelectionPopup();
+  const rects = sel.getRangeAt(0).getClientRects();
+  const r = rects[rects.length - 1];
+  if (!r) return hideSelectionPopup();
+  selPopup.querySelectorAll('[data-needs-edit]').forEach((b) => (b.hidden = !canEdit()));
+  selPopup.hidden = false;
+  const w = selPopup.offsetWidth;
+  selPopup.style.left = `${clamp(r.right - w / 2, 8, window.innerWidth - w - 8)}px`;
+  selPopup.style.top = `${clamp(r.bottom + 8, 8, window.innerHeight - 48)}px`;
+}
+
+document.addEventListener('pointerup', () => setTimeout(showSelectionPopup), true);
+document.addEventListener('selectionchange', () => {
+  if (getSelection().isCollapsed) hideSelectionPopup();
+});
+viewerEl.addEventListener('scroll', hideSelectionPopup, { passive: true });
+selPopup.addEventListener('pointerdown', (e) => e.preventDefault()); // keep the selection
+selPopup.addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.markup) applyTextMarkup(b.dataset.markup);
+  if (b.dataset.sel === 'copy') {
+    navigator.clipboard.writeText(getSelection().toString());
+    hideSelectionPopup();
+    toast('Copied', { ms: 1000 });
+  }
+});
 
 // ---- Images & signatures ------------------------------------------------------------
 
@@ -1743,6 +1956,7 @@ function beginTextEdit(i, line, at = null) {
       list.push(textAt(line.text, line.baseline.x, line.baseline.y));
       renderAnnotations(i);
       renderEditLines(i);
+      if (line.source === 'ocr') refreshTextLayers();
       markDirty();
     }
     editText(i, id, snapshot(), false, at);
@@ -1856,6 +2070,7 @@ async function runOcr() {
       pushUndo(before);
       markDirty();
       state.views.forEach((_, i) => renderEditLines(i));
+      refreshTextLayers();
       if (state.find) runFind(findInput.value);
     }
     const skippedNote = skipped ? ` Skipped ${skipped} page${skipped > 1 ? 's' : ''} that already had text.` : '';
@@ -2114,6 +2329,16 @@ async function buildOutput() {
       switch (a.type) {
         case 'highlight':
           page.drawRectangle({ ...box(a), color: pdfColor(a.color), opacity: 0.4, blendMode: BlendMode.Multiply });
+          break;
+        case 'markup':
+          for (const r of a.rects) {
+            if (a.kind === 'highlight') {
+              page.drawRectangle({ ...box(r), color: pdfColor(a.color), opacity: 0.4, blendMode: BlendMode.Multiply });
+            } else {
+              const y = a.kind === 'underline' ? r.y + r.h * 0.92 : r.y + r.h * 0.55;
+              segment({ color: a.color, width: Math.max(0.75, r.h * 0.07) }, [r.x, y], [r.x + r.w, y]);
+            }
+          }
           break;
         case 'whiteout':
           page.drawRectangle({ ...box(a), color: pdfColor(a.color || '#ffffff') });
@@ -2391,11 +2616,16 @@ window.addEventListener('resize', () => {
   }, 100);
 });
 
-const TOOL_KEYS = { v: 'select', x: 'edittext', t: 'text', p: 'pen', h: 'highlight', r: 'rect', e: 'ellipse', l: 'line', a: 'arrow', w: 'whiteout', i: 'image', s: 'signature' };
+const TOOL_KEYS = { v: 'select', x: 'edittext', t: 'text', p: 'pen', h: 'highlight', u: 'underline', k: 'strike', r: 'rect', e: 'ellipse', l: 'line', a: 'arrow', w: 'whiteout', i: 'image', s: 'signature' };
 document.addEventListener('keydown', (e) => {
   if (isEditable(e.target) || !$('#modal').hidden || !state.pdf) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const sel = selectedAnnot();
+  const key = e.key.toLowerCase();
+  if ((key === 'h' || key === 'u') && !getSelection().isCollapsed && applyTextMarkup(key === 'h' ? 'highlight' : 'underline')) {
+    e.preventDefault();
+    return;
+  }
   if (e.key === 'Delete' || e.key === 'Backspace') {
     e.preventDefault();
     deleteSelected();
@@ -2453,6 +2683,8 @@ window.addEventListener('drop', (e) => {
     await openDocument({ data: new Uint8Array(await file.arrayBuffer()), name: file.name });
   });
 });
+
+api.info().then((info) => (state.userName = info.userName));
 
 viewerEl.dataset.tool = 'select';
 $('[data-tool="select"]').classList.add('active');

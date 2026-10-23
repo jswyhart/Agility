@@ -141,6 +141,12 @@ select:focus, input:focus { border-color: var(--select); }
 
 /* Tool cursors */
 .viewer[data-tool="select"] .annots { cursor: default; }
+/* Select and markup tools: presses pass through the annotation layer to the text. */
+.viewer:is([data-tool="select"], [data-tool="highlight"], [data-tool="underline"], [data-tool="strike"]) .annots { pointer-events: none; }
+.viewer[data-tool="select"] .annot:not(.markup):not(.highlight) { pointer-events: auto; }
+.annot.markup, .annot.highlight { pointer-events: none; }
+.viewer:is([data-tool="highlight"], [data-tool="underline"], [data-tool="strike"]) .textLayer span { cursor: text; }
+.viewer[data-tool="highlight"] .page { cursor: crosshair; }
 .viewer[data-tool="text"] .annots { cursor: text; }
 .viewer:not([data-tool="select"]):not([data-tool="text"]) .annots { cursor: crosshair; }
 .viewer:not([data-tool="select"]) .annot { pointer-events: none; }
@@ -166,6 +172,14 @@ select:focus, input:focus { border-color: var(--select); }
 }
 .annot.selected .handle { display: block; }
 .annot.highlight { mix-blend-mode: multiply; }
+.annot.markup .mark { position: absolute; }
+.annot.markup .mark.highlight { mix-blend-mode: multiply; border-radius: 1px; }
+.annot.markup .mark.underline::after, .annot.markup .mark.strike::after {
+  content: ""; position: absolute; left: 0; right: 0; height: max(1px, 7%); background: var(--mark-color);
+}
+.annot.markup .mark.underline::after { bottom: 4%; }
+.annot.markup .mark.strike::after { top: 52%; }
+.annot.markup.selected { outline-offset: 1px; }
 .annot.text .content {
   white-space: pre; font-family: Helvetica, Arial, sans-serif; line-height: 1.2;
   padding: 2px 3px; min-width: 8px; outline: none; user-select: text;
@@ -173,6 +187,51 @@ select:focus, input:focus { border-color: var(--select); }
 .annot.text.editing .content { outline: 1.5px solid var(--select); background: rgba(255, 255, 255, 0.6); cursor: text; }
 .annot.text .content:empty::before { content: "Type here"; color: #999; }
 .annot.image img { width: 100%; height: 100%; display: block; pointer-events: none; }
+
+/* ---- Text layer (selectable text, adapted from pdf.js's viewer CSS) ----------- */
+.page { --scale-round-x: 1px; --scale-round-y: 1px; }
+.textLayer {
+  position: absolute; inset: 0; overflow: clip; opacity: 1; line-height: 1; text-align: initial;
+  letter-spacing: normal; word-spacing: normal; text-size-adjust: none; forced-color-adjust: none;
+  transform-origin: 0 0; caret-color: CanvasText; z-index: 1;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.textLayer :is(span, br) {
+  color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; user-select: text;
+}
+.textLayer > :not(.markedContent):not(.ocr), .textLayer .markedContent span:not(.markedContent) {
+  z-index: 1; --font-height: 0; font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1; --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.textLayer .ocr { font-family: sans-serif; overflow: hidden; z-index: 1; }
+.textLayer .markedContent { display: contents; }
+.textLayer span[role="img"] { user-select: none; cursor: default; }
+.textLayer ::selection { background: rgba(0, 92, 255, 0.28); color: transparent; }
+.textLayer br::selection { background: transparent; }
+.textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: 0; cursor: default; user-select: none; }
+.textLayer[data-main-rotation="90"] { transform: rotate(90deg) translateX(-100%); }
+.textLayer[data-main-rotation="180"] { transform: rotate(180deg) translate(-100%, -100%); }
+.textLayer[data-main-rotation="270"] { transform: rotate(270deg) translateY(-100%); }
+.viewer:not([data-tool="select"]):not([data-tool="highlight"]):not([data-tool="underline"]):not([data-tool="strike"]) .textLayer { pointer-events: none; }
+
+.sel-popup {
+  position: fixed; z-index: 55; display: flex; gap: 2px; padding: 4px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+.sel-popup[hidden] { display: none; }
+.sel-popup button {
+  display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 0; border-radius: 5px;
+  background: none; cursor: pointer; font-size: 12px;
+}
+.sel-popup button:hover { background: var(--panel-2); }
+.sel-popup button[hidden] { display: none; }
+.sel-popup .sw { width: 12px; height: 12px; border-radius: 3px; }
+.sel-popup .sw.hl { background: #ffd400; }
+.sel-popup .sw.ul { border-bottom: 2px solid #1a9f4b; border-radius: 0; height: 8px; }
+.sel-popup .sw.st { background: linear-gradient(transparent 45%, #e5484d 45% 60%, transparent 60%); }
 
 /* ---- Welcome / overlays --------------------------------------------------- */
 .welcome { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
