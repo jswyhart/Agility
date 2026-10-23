@@ -9,6 +9,7 @@
 
 import * as pdfjsLib from '../node_modules/pdfjs-dist/build/pdf.mjs';
 import { removeTextLine } from './textedit.js';
+import { isAnnotationType, writeAnnotations, takeAnnotations } from './pdfannots.js';
 
 const {
   PDFDocument, StandardFonts, rgb, degrees, BlendMode, LineCapStyle,
@@ -286,7 +287,20 @@ async function confirmDiscard() {
 }
 
 async function openDocument({ data, path = null, name = 'Untitled.pdf' }) {
-  const bytes = new Uint8Array(data);
+  let bytes = new Uint8Array(data);
+  let readOnly = false;
+  let imported = null;
+  try {
+    // Markup Agility saved as annotations comes back as editable objects; take it
+    // out of the page so it isn't drawn twice.
+    const doc = await PDFDocument.load(bytes, { updateMetadata: false });
+    imported = takeAnnotations(doc, rotateAnnotation);
+    if (imported) bytes = await doc.save();
+  } catch (err) {
+    readOnly = true;
+    const why = /encrypt/i.test(err.message) ? 'is encrypted' : "couldn't be parsed for editing";
+    setTimeout(() => toast(`This PDF ${why}, so it opened read-only.`, { ms: 6000 }), 300);
+  }
   let pdf;
   try {
     pdf = await loadPdfJs(bytes);
@@ -294,20 +308,14 @@ async function openDocument({ data, path = null, name = 'Untitled.pdf' }) {
     if (err?.name === 'PasswordException' || /destroyed/i.test(err?.message)) return;
     throw new Error(`Couldn't open “${name}”: ${err.message}`);
   }
-  let readOnly = false;
-  try {
-    await PDFDocument.load(bytes, { updateMetadata: false });
-  } catch (err) {
-    readOnly = true;
-    const why = /encrypt/i.test(err.message) ? 'is encrypted' : "couldn't be parsed for editing";
-    setTimeout(() => toast(`This PDF ${why}, so it opened read-only.`, { ms: 6000 }), 300);
-  }
 
   state.pdf?.loadingTask.destroy();
+  const pageIds = Array.from({ length: pdf.numPages }, uid);
+  const annotations = {};
+  imported?.forEach((list, i) => list && pageIds[i] && (annotations[pageIds[i]] = list));
   Object.assign(state, {
-    bytes, readOnly, filePath: path, fileName: name,
-    pageIds: Array.from({ length: pdf.numPages }, uid),
-    annotations: {}, formValues: {}, undo: [], redo: [],
+    bytes, readOnly, filePath: path, fileName: name, pageIds, annotations,
+    formValues: {}, undo: [], redo: [],
     dirty: false, selected: null, pendingImage: null, find: null, current: 0,
   });
   findInput.value = '';
@@ -1910,7 +1918,7 @@ function beginTextEdit(i, line, at = null) {
     const size = Math.round(line.size * 10) / 10;
     const id = uid();
     const textAt = (text, bx, by) => ({
-      id, type: 'text', text, size, color: colors.ink, ...style,
+      id, type: 'text', edit: true, text, size, color: colors.ink, ...style,
       x: bx - size * TEXT_PAD_X, y: by - size * (TEXT_PAD_Y + textBaseline(style)),
     });
 
@@ -2275,7 +2283,9 @@ function encodable(font, text) {
   return out;
 }
 
-async function buildOutput() {
+// flatten: draw all markup into the page content instead of writing editable
+// annotations (for a copy that looks the same everywhere and can't be changed).
+async function buildOutput({ flatten = false } = {}) {
   if (isEditable(document.activeElement)) document.activeElement.blur();
   const doc = await PDFDocument.load(state.bytes, { updateMetadata: false });
   const font = await doc.embedFont(StandardFonts.Helvetica);
@@ -2325,7 +2335,12 @@ async function buildOutput() {
     const segment = (a, [x1, y1], [x2, y2]) =>
       page.drawLine({ start: pt(x1, y1), end: pt(x2, y2), thickness: a.width, color: pdfColor(a.color), lineCap: LineCapStyle.Round });
 
+    const annotationList = [];
     for (const a of paintOrder(list)) {
+      if (!flatten && isAnnotationType(a)) {
+        annotationList.push(a);
+        continue;
+      }
       switch (a.type) {
         case 'highlight':
           page.drawRectangle({ ...box(a), color: pdfColor(a.color), opacity: 0.4, blendMode: BlendMode.Multiply });
@@ -2404,6 +2419,12 @@ async function buildOutput() {
         }
       }
     }
+    if (annotationList.length) {
+      await writeAnnotations({
+        doc, page, vp, pt, arrowHead, encodable, textBaseline, TEXT_PAD_X, TEXT_PAD_Y,
+        fontFor: (a) => fontFor(standardFontName(a)),
+      }, annotationList);
+    }
   }
   return doc.save();
 }
@@ -2425,6 +2446,15 @@ function save({ saveAs = false } = {}) {
     updateUI();
     toast(`Saved ${res.name}`);
     return true;
+  });
+}
+
+function saveFlattened() {
+  return enqueue(async () => {
+    if (!state.pdf || state.readOnly) return;
+    const base = (state.fileName || 'Document').replace(/\.pdf$/i, '');
+    const res = await api.saveAs(await buildOutput({ flatten: true }), `${base} (flattened).pdf`);
+    if (res) toast(`Saved ${res.name}`);
   });
 }
 
@@ -2471,6 +2501,7 @@ const actions = {
   open: () => api.openFiles(),
   save: () => save(),
   'save-as': () => save({ saveAs: true }),
+  'save-flattened': () => saveFlattened(),
   'save-and-close': async () => {
     if (await save()) api.forceClose();
     else api.closeCancelled();

@@ -383,6 +383,7 @@ function buildMenu() {
         { type: 'separator' },
         { label: 'Save', accelerator: 'CmdOrCtrl+S', click: send('save') },
         { label: 'Save As…', accelerator: 'CmdOrCtrl+Shift+S', click: send('save-as') },
+        { label: 'Save Flattened Copy…', click: send('save-flattened') },
         { label: 'Save with Password…', click: send('save-password') },
         { label: 'Reduce File Size…', click: send('compress') },
         { type: 'separator' },
