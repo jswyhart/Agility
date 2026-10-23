@@ -172,6 +172,7 @@ select:focus, input:focus { border-color: var(--select); }
 }
 .annot.selected .handle { display: block; }
 .annot.highlight { mix-blend-mode: multiply; }
+.annot.redact { border: 1.5px solid #e5484d; background: repeating-linear-gradient(-45deg, rgba(229,72,77,0.18) 0 6px, rgba(229,72,77,0.06) 6px 12px); }
 .annot.markup .mark { position: absolute; }
 .annot.markup .mark.highlight { mix-blend-mode: multiply; border-radius: 1px; }
 .annot.markup .mark.underline::after, .annot.markup .mark.strike::after {

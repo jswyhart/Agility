@@ -8,14 +8,14 @@
 // drawn into the page content with pdf-lib.
 
 import * as pdfjsLib from '../node_modules/pdfjs-dist/build/pdf.mjs';
-import { removeTextLine } from './textedit.js';
+import { removeTextLine, redactText, collectGarbage } from './textedit.js';
 import { isAnnotationType, writeAnnotations, takeAnnotations } from './pdfannots.js';
 
 const {
   PDFDocument, StandardFonts, rgb, degrees, BlendMode, LineCapStyle,
   PDFTextField, PDFCheckBox, PDFDropdown, PDFRadioGroup, PDFOptionList,
   pushGraphicsState, popGraphicsState, beginText, endText, setFontAndSize, setTextMatrix,
-  setTextRenderingMode, showText, TextRenderingMode,
+  setTextRenderingMode, showText, TextRenderingMode, PDFName, PDFDict, PDFArray,
 } = window.PDFLib;
 
 const asset = (p) => new URL(`../node_modules/pdfjs-dist/${p}`, import.meta.url).href;
@@ -54,13 +54,13 @@ const italicButton = $('#prop-italic');
 const zoomSelect = $('#zoom');
 
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
-const DRAW_TOOLS = new Set(['pen', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'whiteout']);
+const DRAW_TOOLS = new Set(['pen', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'whiteout', 'redact']);
 // Tools that mark up the document's own text by selecting it.
 const MARKUP_TOOLS = { highlight: 'highlight', underline: 'underline', strike: 'strike' };
 // Markup that lies flat on the text: it never blocks text selection, and is
 // picked by a plain click instead (see onPagePointerDown).
 const PASSIVE_TYPES = new Set(['markup', 'highlight']);
-const BOX_TYPES = new Set(['highlight', 'whiteout', 'rect', 'ellipse', 'image']);
+const BOX_TYPES = new Set(['highlight', 'whiteout', 'rect', 'ellipse', 'image', 'redact']);
 const TEXT_PAD_X = 0.2; // em, must match .annot.text .content padding
 const TEXT_PAD_Y = 0.1;
 
@@ -945,6 +945,9 @@ function annotElement(a) {
     case 'whiteout':
       el.style.background = a.color || '#fff';
       break;
+    case 'redact':
+      el.title = 'Marked for redaction — use Tools ▸ Apply Redactions to remove';
+      break;
     default:
       el.append(shapeSvg(a, b));
   }
@@ -1321,7 +1324,7 @@ function startDraw(e, i, tool) {
   e.preventDefault();
   const { width: W, height: H } = baseViewport(i);
   const p0 = pagePoint(e, i);
-  const color = tool === 'whiteout' ? '#ffffff' : colorInput.value;
+  const color = tool === 'whiteout' ? '#ffffff' : tool === 'redact' ? '#e5484d' : colorInput.value;
   const width = Number(widthInput.value);
   const a = { id: uid(), type: tool, color, width };
   if (tool === 'pen') a.points = [[p0.x, p0.y]];
@@ -1522,6 +1525,7 @@ selPopup.addEventListener('click', (e) => {
   if (!b) return;
   if (b.dataset.markup) applyTextMarkup(b.dataset.markup);
   if (b.dataset.sel === 'comment' && applyTextMarkup('highlight')) openComment(state.selected?.id);
+  if (b.dataset.sel === 'redact') markSelectionForRedaction();
   if (b.dataset.sel === 'copy') {
     navigator.clipboard.writeText(getSelection().toString());
     hideSelectionPopup();
@@ -2118,6 +2122,151 @@ async function runOcr() {
   });
 }
 
+// ---- Redaction --------------------------------------------------------------------------
+// Marks are reviewable boxes; applying them permanently removes the text, images,
+// markup and form fields underneath, then blacks the areas out.
+
+function markSelectionForRedaction() {
+  const parts = selectionByPage();
+  if (!parts.length || !canEdit()) return;
+  pushUndo();
+  for (const { page, rects } of parts) {
+    for (const r of rects) annotsOf(page).push({ id: uid(), type: 'redact', color: '#e5484d', x: r.x - 0.5, y: r.y - 0.5, w: r.w + 1, h: r.h + 1 });
+    renderAnnotations(page);
+  }
+  getSelection().removeAllRanges();
+  hideSelectionPopup();
+  markDirty();
+  toast('Marked for redaction. Use Apply Redactions to remove it permanently.', { ms: 4000 });
+}
+
+const boxesIntersect = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+
+async function applyRedactions() {
+  if (!canEdit()) return;
+  const pages = state.pageIds
+    .map((id, i) => ({ i, marks: (state.annotations[id] || []).filter((a) => a.type === 'redact') }))
+    .filter((p) => p.marks.length);
+  const count = pages.reduce((n, p) => n + p.marks.length, 0);
+  if (!count) return toast('Nothing is marked. Use Mark for Redaction, or select text and choose Redact.', { ms: 4500 });
+  const ok = await confirmModal(
+    'Apply redactions?',
+    `This permanently removes the text, images, markup and form fields under ${count} marked area${count > 1 ? 's' : ''} on ${pages.length} page${pages.length > 1 ? 's' : ''}, and blacks them out. Once saved, the content can't be recovered.`,
+    'Redact'
+  );
+  if (!ok) return;
+  await enqueue(async () => {
+    const before = snapshot();
+    const doc = await PDFDocument.load(state.bytes, { updateMetadata: false });
+    let rasterized = 0;
+    for (const { i, marks } of pages) {
+      const vp = state.pages[i].getViewport({ scale: 1 });
+      const userRect = (m) => {
+        const [x1, y1] = vp.convertToPdfPoint(m.x, m.y);
+        const [x2, y2] = vp.convertToPdfPoint(m.x + m.w, m.y + m.h);
+        return { x: Math.min(x1, x2), y: Math.min(y1, y2), width: Math.abs(x2 - x1), height: Math.abs(y2 - y1) };
+      };
+      const rects = marks.map(userRect);
+      const page = doc.getPage(i);
+      const { complex } = redactText(doc, i, rects);
+      if (complex) {
+        // An image or embedded object is under a mark: replace the page with a
+        // picture of itself with the areas burned in, plus its remaining text
+        // as an invisible layer so it stays searchable.
+        await rasterizePage(doc, i, rects, marks);
+        rasterized++;
+      } else {
+        for (const r of rects) page.drawRectangle({ ...r, color: rgb(0, 0, 0) });
+      }
+      removeAnnotationsUnder(doc, page, rects);
+      // Markup over the area could repeat what was removed.
+      state.annotations[state.pageIds[i]] = annotsOf(i).filter((a) => a.type !== 'redact' && !marks.some((m) => boxesIntersect(bounds(a), m)));
+    }
+    collectGarbage(doc);
+    const bytes = await doc.save();
+    pushUndo(before);
+    await reloadBytes(bytes);
+    markDirty();
+    toast(`Redacted ${count} area${count > 1 ? 's' : ''}${rasterized ? ` (${rasterized} page${rasterized > 1 ? 's were' : ' was'} converted to an image to remove pictures)` : ''}. Save to make it permanent.`, { ms: 6000 });
+  });
+}
+
+// Remove links, comments and form fields whose area overlaps a redaction.
+function removeAnnotationsUnder(doc, page, rects) {
+  const annots = page.node.Annots();
+  if (!annots) return;
+  const keep = [];
+  const form = doc.catalog.lookupMaybe(PDFName.of('AcroForm'), PDFDict);
+  const fields = form?.lookupMaybe(PDFName.of('Fields'), PDFArray);
+  for (const ref of annots.asArray()) {
+    const dict = doc.context.lookupMaybe(ref, PDFDict);
+    const r = dict?.lookupMaybe(PDFName.of('Rect'), PDFArray)?.asArray().map((n) => n.asNumber?.() ?? 0);
+    const hit = r && rects.some((q) => Math.min(r[0], r[2]) < q.x + q.width && Math.max(r[0], r[2]) > q.x && Math.min(r[1], r[3]) < q.y + q.height && Math.max(r[1], r[3]) > q.y);
+    if (!hit) {
+      keep.push(ref);
+      continue;
+    }
+    // A widget that is its own field also goes from the form, value and all.
+    if (fields && dict.has(PDFName.of('FT'))) {
+      const idx = fields.asArray().findIndex((f) => f.toString() === ref.toString());
+      if (idx >= 0) fields.remove(idx);
+    }
+  }
+  page.node.set(PDFName.of('Annots'), doc.context.obj(keep));
+}
+
+async function rasterizePage(doc, i, rects, marks) {
+  const source = state.pages[i];
+  const scale = 200 / 72;
+  const vp = source.getViewport({ scale, rotation: 0 });
+  const canvas = Object.assign(document.createElement('canvas'), { width: Math.ceil(vp.width), height: Math.ceil(vp.height) });
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await source.render({ canvasContext: ctx, viewport: vp, annotationMode: pdfjsLib.AnnotationMode.DISABLE }).promise;
+  ctx.fillStyle = '#000';
+  for (const r of rects) {
+    const [x1, y1] = vp.convertToViewportPoint(r.x, r.y);
+    const [x2, y2] = vp.convertToViewportPoint(r.x + r.width, r.y + r.height);
+    ctx.fillRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+  }
+  const jpeg = new Uint8Array(await (await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.9))).arrayBuffer());
+
+  // Remaining text, minus anything under a mark, becomes invisible OCR-style words.
+  const tc = await source.getTextContent();
+  const dvp = source.getViewport({ scale: 1 });
+  const words = [];
+  for (const it of tc.items) {
+    if (!it.str.trim() || !it.width) continue;
+    const tx = pdfjsLib.Util.transform(dvp.transform, it.transform);
+    if (Math.abs(tx[1]) > 0.01 || tx[0] <= 0) continue; // only text that reads left to right
+    const h = Math.hypot(tx[2], tx[3]);
+    const n = it.str.length;
+    const cw = it.width / n;
+    let start = null;
+    const flush = (end) => {
+      if (start === null) return;
+      const text = it.str.slice(start, end).trim();
+      if (text) words.push({ id: uid(), type: 'ocrtext', line: `r${i}-${tx[5].toFixed(1)}`, text, x: tx[4] + start * cw, y: tx[5] - h * 0.8, w: (end - start) * cw, h, base: 0.8 });
+      start = null;
+    };
+    for (let k = 0; k < n; k++) {
+      const box = { x: tx[4] + k * cw, y: tx[5] - h * 0.8, w: cw, h };
+      const hidden = marks.some((m) => boxesIntersect(box, m));
+      if (hidden || it.str[k] === ' ') flush(k);
+      else if (start === null) start = k;
+    }
+    flush(n);
+  }
+
+  const page = doc.getPage(i);
+  const crop = page.getCropBox();
+  page.node.set(PDFName.of('Resources'), doc.context.obj({}));
+  page.node.set(PDFName.of('Contents'), doc.context.obj([]));
+  page.drawImage(await doc.embedJpg(jpeg), { x: crop.x, y: crop.y, width: crop.width, height: crop.height });
+  annotsOf(i).push(...words);
+}
+
 // ---- Comments panel ---------------------------------------------------------------------
 
 const commentsEl = $('#comments');
@@ -2664,6 +2813,8 @@ const actions = {
   'save-flattened': () => saveFlattened(),
   'toggle-comments': () => toggleComments(),
   'tool-note': () => setTool('note'),
+  'tool-redact': () => setTool('redact'),
+  'apply-redactions': () => applyRedactions(),
   'save-and-close': async () => {
     if (await save()) api.forceClose();
     else api.closeCancelled();
@@ -2809,7 +2960,7 @@ window.addEventListener('resize', () => {
   }, 100);
 });
 
-const TOOL_KEYS = { v: 'select', x: 'edittext', n: 'note', t: 'text', p: 'pen', h: 'highlight', u: 'underline', k: 'strike', r: 'rect', e: 'ellipse', l: 'line', a: 'arrow', w: 'whiteout', i: 'image', s: 'signature' };
+const TOOL_KEYS = { v: 'select', x: 'edittext', n: 'note', d: 'redact', t: 'text', p: 'pen', h: 'highlight', u: 'underline', k: 'strike', r: 'rect', e: 'ellipse', l: 'line', a: 'arrow', w: 'whiteout', i: 'image', s: 'signature' };
 document.addEventListener('keydown', (e) => {
   if (isEditable(e.target) || !$('#modal').hidden || !state.pdf) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -2884,4 +3035,4 @@ $('[data-tool="select"]').classList.add('active');
 updateUI();
 
 // Exposed for debugging from DevTools.
-window.agility = { state, buildOutput, openPath: (p) => enqueue(() => openPath(p)) };
+window.agility = { state, buildOutput, applyRedactions, openPath: (p) => enqueue(() => openPath(p)) };

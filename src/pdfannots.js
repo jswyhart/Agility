@@ -17,7 +17,7 @@ const deg0 = degrees(0);
 // Types written as annotations; everything else is drawn into the page.
 export function isAnnotationType(a) {
   if (a.type === 'text') return !a.edit; // edited PDF text belongs in the content
-  return ['markup', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'pen', 'note'].includes(a.type);
+  return ['markup', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'pen', 'note', 'redact'].includes(a.type);
 }
 
 const pdfDate = (iso) => {
@@ -118,6 +118,13 @@ export async function writeAnnotations(ctx, list) {
         }), 1);
         const subtype = { highlight: 'Highlight', underline: 'Underline', strike: 'StrikeOut' }[kind];
         add(a, subtype, rect, { QuadPoints: quads }, ops, kind === 'highlight' ? { ExtGState: { GS0: gsMultiply } } : {});
+        break;
+      }
+      case 'redact': {
+        // An unapplied mark: other editors can review and apply it too.
+        const b = userBox(a);
+        const ops = drawRectangle({ ...b, borderColor: rgb(0.9, 0.28, 0.3), borderWidth: 1.5, rotate: deg0, xSkew: deg0, ySkew: deg0 });
+        add(a, 'Redact', pad(b, 1), { QuadPoints: [b.x, b.y + b.height, b.x + b.width, b.y + b.height, b.x, b.y, b.x + b.width, b.y], IC: [0, 0, 0] }, ops);
         break;
       }
       case 'rect':

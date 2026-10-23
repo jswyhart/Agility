@@ -5,7 +5,7 @@
 // user space. Operators that fall on the target line are replaced by an empty
 // TJ with the same advance, so any text that follows on the line stays put.
 
-const { PDFName, PDFArray, PDFDict, PDFNumber, PDFRawStream, decodePDFRawStream, StandardFontEmbedder } = window.PDFLib;
+const { PDFName, PDFArray, PDFDict, PDFNumber, PDFRawStream, PDFRef, decodePDFRawStream, StandardFontEmbedder } = window.PDFLib;
 
 // WinAnsi codes 128–159 that differ from Latin-1.
 const WIN_ANSI_HIGH = '€\u0081‚ƒ„…†‡ˆ‰Š‹Œ\u008dŽ\u008f\u0090‘’“”•–—˜™š›œ\u009džŸ';
@@ -170,7 +170,7 @@ function fontMetrics(fontDict) {
   if (!(fontDict instanceof PDFDict)) return { twoByte: false, width: () => 500 };
   const subtype = fontDict.lookup(PDFName.of('Subtype'))?.toString();
   if (subtype === '/Type0') {
-    const desc = fontDict.lookup(PDFName.of('DescendantFonts'), PDFArray)?.lookup(0, PDFDict);
+    const desc = fontDict.lookupMaybe(PDFName.of('DescendantFonts'), PDFArray)?.lookup(0, PDFDict);
     const dw = num(desc?.lookup(PDFName.of('DW')), 1000);
     const widths = new Map();
     const w = desc?.lookup(PDFName.of('W'));
@@ -222,9 +222,20 @@ const mul = (m, n) => [
 ];
 const apply = (m, x, y) => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
 
+const boxOf = (m, x0, y0, x1, y1) => {
+  const pts = [apply(m, x0, y0), apply(m, x1, y0), apply(m, x0, y1), apply(m, x1, y1)];
+  const xs = pts.map((p) => p[0]);
+  const ys = pts.map((p) => p[1]);
+  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+};
+
 // Returns every text-showing operation with its user-space start/end points.
-function interpret(ops, fonts) {
+// With glyphs: true each run also lists its parts: { kern } numbers and
+// { bytes, adv, box } glyphs (box in user space). runs.draws lists images and
+// form XObjects with their user-space boxes.
+function interpret(ops, fonts, { glyphs = false } = {}) {
   const runs = [];
+  runs.draws = [];
   let gs = { ctm: [1, 0, 0, 1, 0, 0], Tc: 0, Tw: 0, Th: 1, TL: 0, font: null, Tfs: 0, Ts: 0, Tr: 0 };
   const stack = [];
   let Tm = [1, 0, 0, 1, 0, 0];
@@ -269,6 +280,12 @@ function interpret(ops, fonts) {
       case 'TD': gs.TL = -(a[1] ?? 0); nextLine(a[0] ?? 0, a[1] ?? 0); break;
       case 'Tm': if (a.length === 6) Tm = Tlm = a.slice(); break;
       case 'T*': nextLine(0, -gs.TL); break;
+      case 'Do':
+        if (a[0]?.name) runs.draws.push({ name: a[0].name, box: boxOf(gs.ctm, 0, 0, 1, 1) });
+        break;
+      case 'EI':
+        runs.draws.push({ inline: true, box: boxOf(gs.ctm, 0, 0, 1, 1) });
+        break;
       case "'": case '"': case 'Tj': case 'TJ': {
         if (o.op === '"') { gs.Tw = a[0] ?? 0; gs.Tc = a[1] ?? 0; }
         if (o.op === "'" || o.op === '"') nextLine(0, -gs.TL);
@@ -276,14 +293,33 @@ function interpret(ops, fonts) {
         const [x0, y0] = apply(m0, 0, gs.Ts);
         let total = 0;
         const parts = o.op === 'TJ' ? (Array.isArray(a[0]) ? a[0] : []) : [a[a.length - 1]];
+        const detail = glyphs ? [] : null;
         for (const p of parts) {
-          if (typeof p === 'number') total -= (p / 1000) * gs.Tfs * gs.Th;
-          else if (p?.str) total += advance(p.str);
+          if (typeof p === 'number') {
+            total -= (p / 1000) * gs.Tfs * gs.Th;
+            detail?.push({ kern: p });
+          } else if (p?.str) {
+            if (!detail) {
+              total += advance(p.str);
+              continue;
+            }
+            // One glyph at a time, so each can be kept or dropped.
+            const m = metrics(gs.font);
+            const step = m.twoByte ? 2 : 1;
+            for (let k = 0; k + step - 1 < p.str.length; k += step) {
+              const code = m.twoByte ? (p.str[k] << 8) | p.str[k + 1] : p.str[k];
+              const w = (m.width(code) / 1000) * gs.Tfs * gs.Th;
+              const adv = w + (gs.Tc + (!m.twoByte && code === 32 ? gs.Tw : 0)) * gs.Th;
+              const box = boxOf(m0, total, gs.Ts - 0.25 * gs.Tfs, total + Math.max(w, 0.01), gs.Ts + 0.85 * gs.Tfs);
+              detail.push({ bytes: p.str.subarray(k, k + step), adv, box });
+              total += adv;
+            }
+          }
         }
         Tm = mul([1, 0, 0, 1, total, 0], Tm);
         const [x1, y1] = apply(mul(Tm, gs.ctm), 0, gs.Ts);
         const size = Math.hypot(m0[2], m0[3]) * gs.Tfs;
-        runs.push({ index, x0, y0, x1, y1, total, Tfs: gs.Tfs, Th: gs.Th, size, invisible: gs.Tr === 3 || gs.Tr === 7 });
+        runs.push({ index, x0, y0, x1, y1, total, Tfs: gs.Tfs, Th: gs.Th, size, invisible: gs.Tr === 3 || gs.Tr === 7, parts: detail });
         break;
       }
     }
@@ -330,7 +366,7 @@ export function removeTextLine(doc, pageIndex, target, { dryRun = false } = {}) 
   const page = doc.getPage(pageIndex);
   const bytes = readPageContent(page);
   const ops = parseOps(bytes);
-  const fonts = page.node.Resources()?.lookup(PDFName.of('Font'), PDFDict);
+  const fonts = page.node.Resources()?.lookupMaybe(PDFName.of('Font'), PDFDict);
   const runs = interpret(ops, fonts);
 
   const { x, y, dx, dy, length, size } = target;
@@ -379,3 +415,93 @@ export function removeTextLine(doc, pageIndex, target, { dryRun = false } = {}) 
   return { removed: hits.length, from, to, invisible };
 }
 
+
+const intersects = (b, r) => b.x0 < r.x + r.width && b.x1 > r.x && b.y0 < r.y + r.height && b.y1 > r.y;
+
+/**
+ * Permanently remove the text under some user-space rectangles ({x, y, width, height}).
+ * Only the glyphs inside are taken out (each replaced by an equal move, so the
+ * rest of the line stays put). Returns { glyphs, complex }, where complex means an
+ * image or embedded form object also lies under a rectangle, which needs the
+ * page to be rasterized to remove it.
+ */
+export function redactText(doc, pageIndex, rects) {
+  const page = doc.getPage(pageIndex);
+  const bytes = readPageContent(page);
+  const ops = parseOps(bytes);
+  const resources = page.node.Resources();
+  const fonts = resources?.lookupMaybe(PDFName.of('Font'), PDFDict);
+  const runs = interpret(ops, fonts, { glyphs: true });
+  const complex = runs.draws.some((d) => rects.some((r) => intersects(d.box, r)));
+
+  const enc = new TextEncoder();
+  const hex = (b) => `<${[...b].map((x) => x.toString(16).padStart(2, '0')).join('')}>`;
+  const fmt = (n) => (Math.abs(n) < 1e-6 ? '0' : n.toFixed(4).replace(/\.?0+$/, ''));
+  const out = [];
+  let cursor = 0;
+  let removed = 0;
+  for (const r of runs) {
+    if (!r.parts?.some((g) => g.box && rects.some((rect) => intersects(g.box, rect)))) continue;
+    const o = ops[r.index];
+    const items = [];
+    for (const g of r.parts) {
+      if (!g.box) items.push(fmt(g.kern));
+      else if (rects.some((rect) => intersects(g.box, rect))) {
+        removed++;
+        if (r.Tfs && r.Th) items.push(fmt((-g.adv * 1000) / (r.Tfs * r.Th)));
+      } else items.push(hex(g.bytes));
+    }
+    let repl = `[${items.join(' ')}] TJ`;
+    if (o.op === "'") repl = `T* ${repl}`;
+    if (o.op === '"') repl = `${fmt(o.args[0] ?? 0)} Tw ${fmt(o.args[1] ?? 0)} Tc T* ${repl}`;
+    out.push(bytes.subarray(cursor, o.start), enc.encode(` ${repl} `));
+    cursor = o.end;
+  }
+  if (removed) {
+    out.push(bytes.subarray(cursor));
+    const total = out.reduce((n, p) => n + p.length, 0);
+    const merged = new Uint8Array(total);
+    let at = 0;
+    for (const p of out) {
+      merged.set(p, at);
+      at += p.length;
+    }
+    page.node.set(PDFName.of('Contents'), doc.context.register(doc.context.flateStream(merged)));
+  }
+  return { glyphs: removed, complex };
+}
+
+/**
+ * Delete every object nothing refers to any more. pdf-lib writes all objects it
+ * holds, so content replaced by an edit or redaction would otherwise still be in
+ * the saved file.
+ */
+export function collectGarbage(doc) {
+  const { context } = doc;
+  const seen = new Set();
+  const visit = (obj) => {
+    if (!obj) return;
+    if (obj instanceof PDFRef) {
+      const key = obj.toString();
+      if (seen.has(key)) return;
+      seen.add(key);
+      visit(context.lookup(obj));
+    } else if (obj instanceof PDFDict) {
+      for (const [, v] of obj.entries()) visit(v);
+    } else if (obj instanceof PDFArray) {
+      for (const v of obj.asArray()) visit(v);
+    } else if (obj?.dict instanceof PDFDict) {
+      visit(obj.dict); // stream
+    }
+  };
+  const t = context.trailerInfo;
+  for (const root of [t.Root, t.Info, t.Encrypt]) visit(root);
+  let deleted = 0;
+  for (const [ref] of context.enumerateIndirectObjects()) {
+    if (!seen.has(ref.toString())) {
+      context.delete(ref);
+      deleted++;
+    }
+  }
+  return deleted;
+}
