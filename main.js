@@ -10,6 +10,7 @@ const { app, BaseWindow, WebContentsView, ipcMain, dialog, Menu, protocol, shell
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const os = require('node:os');
+const { setupUpdates, checkForUpdatesNow } = require('./updater');
 
 const APP_NAME = 'Agility';
 const ROOT = __dirname;
@@ -390,7 +391,23 @@ function buildMenu() {
     ]
     : [{ label: 'No Recent Files', enabled: false }];
   const template = [
-    ...(IS_MAC ? [{ role: 'appMenu' }] : []),
+    ...(IS_MAC ? [{
+      role: 'appMenu',
+      submenu: [
+        { role: 'about' },
+        { label: 'Check for Updates…', click: () => checkForUpdatesNow(focusedWindow()?.win) },
+        { type: 'separator' },
+        { label: 'Settings…', accelerator: 'Cmd+,', click: send('preferences') },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    }] : []),
     {
       label: 'File',
       submenu: [
@@ -487,6 +504,14 @@ function buildMenu() {
       ],
     },
     { role: 'windowMenu' },
+    ...(IS_MAC ? [] : [{
+      label: 'Help',
+      submenu: [
+        { label: 'Preferences…', accelerator: 'Ctrl+,', click: send('preferences') },
+        { label: 'Check for Updates…', click: () => checkForUpdatesNow(focusedWindow()?.win) },
+        { role: 'about' },
+      ],
+    }]),
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -831,6 +856,7 @@ if (!app.requestSingleInstanceLock()) {
     }
     for (const f of files) dw.addTab({ filePath: f });
     if (!dw.tabs.length) dw.addTab();
+    setupUpdates(() => focusedWindow()?.win);
 
     app.on('activate', () => {
       if (!windows.size) newWindow();

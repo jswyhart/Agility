@@ -1,26 +1,16 @@
-name: Build installers
+name: Test and build
 
 on:
   push:
+    branches: [main]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
 
 jobs:
   test:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm test
-
-  build:
-    needs: test
     strategy:
+      fail-fast: false
       matrix:
         os: [macos-latest, windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
@@ -31,11 +21,61 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx electron-builder --publish never
+      - name: Test (Linux needs a virtual display)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb fonts-dejavu
+          xvfb-run -a npm test
+      - name: Test
+        if: runner.os != 'Linux'
+        run: npm test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results-${{ matrix.os }}
+          path: test-results/
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Signing turns on when these repository secrets exist; without them the
+      # builds are unsigned (Gatekeeper / SmartScreen will warn).
+      #   macOS:   MAC_CERT_P12 (base64 Developer ID Application .p12), MAC_CERT_PASSWORD,
+      #            APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID  (notarization)
+      #   Windows: WIN_CERT_PFX (base64 .pfx), WIN_CERT_PASSWORD
+      - name: Build
+        shell: bash
         env:
-          # Unsigned builds by default. Add CSC_LINK / CSC_KEY_PASSWORD (and
-          # APPLE_ID etc. for notarization) as repository secrets to sign.
-          CSC_IDENTITY_AUTO_DISCOVERY: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          WIN_CERT_PFX: ${{ secrets.WIN_CERT_PFX }}
+          WIN_CERT_PASSWORD: ${{ secrets.WIN_CERT_PASSWORD }}
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ] && [ -n "$MAC_CERT_P12" ]; then
+            export CSC_LINK="$MAC_CERT_P12" CSC_KEY_PASSWORD="$MAC_CERT_PASSWORD"
+          elif [ "$RUNNER_OS" = "Windows" ] && [ -n "$WIN_CERT_PFX" ]; then
+            export CSC_LINK="$WIN_CERT_PFX" CSC_KEY_PASSWORD="$WIN_CERT_PASSWORD"
+          else
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+          fi
+          # Tagged builds publish a GitHub Release (which auto-update reads).
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then PUBLISH=always; else PUBLISH=never; fi
+          npx electron-builder --publish "$PUBLISH"
       - uses: actions/upload-artifact@v4
         with:
           name: agility-${{ matrix.os }}
@@ -45,4 +85,5 @@ jobs:
             dist/*.exe
             dist/*.AppImage
             dist/*.deb
+            dist/latest*.yml
           if-no-files-found: ignore

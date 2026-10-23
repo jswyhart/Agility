@@ -87,6 +87,18 @@ npm run dist:linux   # AppImage + .deb
 
 Build each platform on that OS. The GitHub Actions workflow (`.github/workflows/build.yml`) runs the tests, then builds all three when you push a `v*` tag or run it manually. The builds are unsigned: macOS Gatekeeper and Windows SmartScreen will warn until you add signing certificates (see the comments in the workflow and the [electron-builder code-signing docs](https://www.electron.build/code-signing)).
 
+## Releasing, signing and updates
+
+1. In `package.json`, set `build.publish[0].owner` (and `repo`) to your GitHub repository.
+2. Add the signing secrets to the repository. Builds still work without them, but unsigned.
+   - **macOS** (Developer ID + notarization): `MAC_CERT_P12` (base64 of your *Developer ID Application* .p12), `MAC_CERT_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`. Builds use the hardened runtime with `build/entitlements.mac.plist`.
+   - **Windows**: `WIN_CERT_PFX` (base64 .pfx) and `WIN_CERT_PASSWORD`. Azure Trusted Signing can be configured in `build.win` instead.
+3. Push a tag such as `v0.2.0`. CI runs the tests on macOS, Windows and Linux, then builds all three and publishes a GitHub Release with the update metadata (`latest*.yml`).
+
+Installed copies check that release feed at startup and every few hours (*Check for Updates…* in the app or Help menu). They download in the background and offer to restart. Updates work for the macOS zip/dmg, the Windows installer and the Linux AppImage.
+
+To build locally: `npm run dist:mac` on a Mac. Linux AppImages (`npx electron-builder --linux AppImage`) and Windows installers (`--win nsis`) can also be cross-built from macOS, but test them on their own systems.
+
 ## How it works
 
 - `main.js` handles windows, tabs (one isolated editor view per document), menus, dialogs, disk access, recent files, crash-recovery snapshots, saved signatures, the installed-font index and OCR. It serves the UI over a private `app://` scheme to sandboxed renderers.
