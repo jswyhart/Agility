@@ -288,7 +288,7 @@ function markDirty() {
 let recoveredVersion = 0;
 setInterval(() => {
   // Never write a decrypted copy of a password-protected document to disk.
-  if (!state.pdf || !state.dirty || state.version === recoveredVersion || state.protection) return;
+  if (!state.pdf || !state.dirty || state.version === recoveredVersion || state.protection || prefs?.recovery === false) return;
   recoveredVersion = state.version;
   const meta = {
     filePath: state.filePath, fileName: state.fileName, pageIds: state.pageIds,
@@ -415,7 +415,7 @@ async function openDocument({ data, path = null, name = 'Untitled.pdf' }) {
   $('#find-status').textContent = '';
   await setPdf(pdf);
   setTool('select');
-  setZoom('fit-width');
+  setZoom(prefs?.defaultZoom || 'fit-width');
   viewerEl.scrollTop = 0;
   state.outline = await readOutline(pdf, pageIds);
   state.outlineEdited = false;
@@ -3437,6 +3437,7 @@ const actions = {
   'toggle-comments': () => toggleComments(),
   'tool-note': () => setTool('note'),
   'tool-redact': () => setTool('redact'),
+  preferences: () => openPreferences(),
   unlock: () => enqueue(async () => {
     if (state.readOnly !== 'restricted') return toast('This document is already editable.');
     const unlocked = await unlock(state.original, { ownerOnly: true });
@@ -3509,7 +3510,7 @@ document.addEventListener('pointerdown', (e) => {
 });
 
 api.onMenu((action) => {
-  if (!state.pdf && !['open', 'toggle-sidebar', 'from-images'].includes(action)) return;
+  if (!state.pdf && !['open', 'toggle-sidebar', 'from-images', 'preferences'].includes(action)) return;
   actions[action]?.();
 });
 api.onOpenPath((p) => enqueue(() => openPath(p)));
@@ -3686,7 +3687,68 @@ window.addEventListener('drop', (e) => {
   });
 });
 
-api.info().then((info) => (state.userName = info.userName));
+// ---- Preferences --------------------------------------------------------------------------
+
+let prefs = null;
+function applyPrefs(p) {
+  prefs = p;
+  state.userName = p.authorName || state.osUserName || state.userName;
+  Object.assign(state.colors, p.colors);
+  Object.assign(state.textStyle, p.textStyle);
+  fontInput.value = String(p.fontSize);
+  widthInput.value = String(p.strokeWidth);
+  if (!state.selected) {
+    colorInput.value = state.colors[colorKey(state.tool)] || state.colors.shape;
+    syncTextStyleControls(state.textStyle);
+  }
+}
+api.info().then((info) => {
+  state.osUserName = info.userName;
+  state.userName ||= info.userName;
+  return api.prefs();
+}).then(applyPrefs);
+api.onPrefsChanged(applyPrefs);
+
+async function openPreferences() {
+  const p = prefs || (await api.prefs());
+  const color = (key, label) => `<label class="pref-color"><input type="color" data-color="${key}" value="${p.colors[key]}" /> ${label}</label>`;
+  const next = await modal((m, close) => {
+    m.innerHTML = `<h2>Settings</h2><div class="form">
+      <label class="field-row">Your name <input type="text" class="author" placeholder="${state.osUserName || ''}" /></label>
+      <p class="hint-line">Shown as the author of comments and markup.</p>
+      <label class="field-row">Appearance <select class="theme"><option value="system">Match system</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+      <label class="field-row">Open documents at <select class="zoom"><option value="fit-width">Fit width</option><option value="fit-page">Fit page</option><option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option></select></label>
+      <div class="field-row">Default colors</div>
+      <div class="pref-colors">${color('text', 'Text')}${color('shape', 'Shapes & pen')}${color('highlight', 'Highlight')}${color('underline', 'Underline')}${color('strike', 'Strike')}</div>
+      <label class="field-row">Text <select class="font"><option value="sans">Sans</option><option value="serif">Serif</option><option value="mono">Mono</option></select>
+        <input type="number" class="size" min="4" max="200" style="width:70px" /> pt</label>
+      <label class="field-row">Line width <input type="number" class="width" min="1" max="20" style="width:70px" /> pt</label>
+      <label class="opt"><input type="checkbox" class="recovery" /> Keep crash-recovery snapshots of unsaved work</label>
+    </div><div class="actions"></div>`;
+    m.querySelector('.author').value = p.authorName;
+    m.querySelector('.theme').value = p.theme;
+    m.querySelector('.zoom').value = p.defaultZoom;
+    m.querySelector('.font').value = p.textStyle.font;
+    m.querySelector('.size').value = p.fontSize;
+    m.querySelector('.width').value = p.strokeWidth;
+    m.querySelector('.recovery').checked = p.recovery;
+    m.querySelector('.actions').append(button('Cancel', 'secondary', () => close(null)), button('Save', 'primary', () => {
+      const colors = {};
+      m.querySelectorAll('[data-color]').forEach((c) => (colors[c.dataset.color] = c.value));
+      close({
+        authorName: m.querySelector('.author').value.trim(),
+        theme: m.querySelector('.theme').value,
+        defaultZoom: m.querySelector('.zoom').value,
+        colors,
+        textStyle: { ...p.textStyle, font: m.querySelector('.font').value },
+        fontSize: Math.max(4, Number(m.querySelector('.size').value) || 14),
+        strokeWidth: Math.max(1, Number(m.querySelector('.width').value) || 2),
+        recovery: m.querySelector('.recovery').checked,
+      });
+    }));
+  });
+  if (next) applyPrefs(await api.setPrefs(next));
+}
 onFontLoaded(() => {
   baselineCache.clear();
   state.views.forEach((_, i) => renderAnnotations(i));

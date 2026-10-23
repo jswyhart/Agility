@@ -50,6 +50,9 @@ Electron, [pdf.js](https://mozilla.github.io/pdf.js/) (rendering and text),
 - **Password-protected PDFs** (RC4, AES-128 and AES-256) open for editing after you enter the password, and are saved with the same password and permissions. If the author disallowed editing, the document stays read-only until you *Unlock* it with the owner password. *Remove Password* saves it unprotected. Decrypted copies are never written to the crash-recovery folder.
 - Export pages as PNG or JPEG, export text, and create a PDF from images.
 
+**Settings** (⌘/Ctrl ,)
+- Your name for comments, light/dark/system appearance, the zoom documents open at, default colors per tool, default font, size and line width, and whether crash-recovery snapshots are kept. Settings apply to all tabs at once.
+
 **Safety**
 - Undo and redo for everything.
 - Unsaved tabs are snapshotted every few seconds and offered back after a crash.

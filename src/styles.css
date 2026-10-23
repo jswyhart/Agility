@@ -257,6 +257,9 @@ select:focus, input:focus { border-color: var(--select); }
   height: 30px; padding: 0 8px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--border); outline: none;
 }
 .modal .form .field-row input[type="text"], .modal .form .field-row input[type="password"] { flex: 1; }
+.pref-colors { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 2px 0 10px; }
+.pref-color { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.pref-color input { width: 26px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 4px; background: none; }
 .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 8px 0; }
 .grid3 span { color: var(--muted); font-size: 11px; }
 .grid3 input { width: 100%; height: 30px; padding: 0 8px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--border); }

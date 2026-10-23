@@ -6,7 +6,7 @@
 // WebContentsView per open document. Every tab runs its own copy of the editor,
 // so documents never share state.
 
-const { app, BaseWindow, WebContentsView, ipcMain, dialog, Menu, protocol, shell } = require('electron');
+const { app, BaseWindow, WebContentsView, ipcMain, dialog, Menu, protocol, shell, nativeTheme } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -638,6 +638,35 @@ ipcMain.handle('app:info', () => ({
   platform: process.platform,
 }));
 
+// ---- Preferences -------------------------------------------------------------------
+
+const DEFAULT_PREFS = {
+  authorName: '',
+  theme: 'system',
+  defaultZoom: 'fit-width',
+  colors: { text: '#1a1a1a', shape: '#e5484d', highlight: '#ffd400', underline: '#1a9f4b', strike: '#e5484d' },
+  textStyle: { font: 'sans', bold: false, italic: false },
+  fontSize: 14,
+  strokeWidth: 2,
+  recovery: true,
+};
+let prefs = DEFAULT_PREFS;
+
+async function loadPrefs() {
+  const saved = await readJson('prefs.json', {});
+  prefs = { ...DEFAULT_PREFS, ...saved, colors: { ...DEFAULT_PREFS.colors, ...saved.colors }, textStyle: { ...DEFAULT_PREFS.textStyle, ...saved.textStyle } };
+  nativeTheme.themeSource = prefs.theme;
+}
+
+ipcMain.handle('prefs:get', () => prefs);
+ipcMain.handle('prefs:set', async (_e, next) => {
+  prefs = { ...prefs, ...next };
+  nativeTheme.themeSource = prefs.theme;
+  await writeJson('prefs.json', prefs);
+  for (const t of allTabs()) t.view.webContents.send('prefs:changed', prefs);
+  return prefs;
+});
+
 ipcMain.handle('recent:list', () => recent);
 ipcMain.handle('recent:open', (_e, filePath) => openRecent(filePath));
 
@@ -832,6 +861,7 @@ if (!app.requestSingleInstanceLock()) {
     app.setName(APP_NAME);
     registerAppProtocol();
     recent = await readJson('recent.json', []);
+    await loadPrefs();
     buildMenu();
 
     const recovered = await takeRecoveredDocuments();

@@ -39,6 +39,11 @@ contextBridge.exposeInMainWorld('api', {
   allowWrite: (filePath) => ipcRenderer.send('recovery:allow-write', filePath),
   onRestore: on('recovery:restore'),
 
+  // Preferences
+  prefs: () => ipcRenderer.invoke('prefs:get'),
+  setPrefs: (next) => ipcRenderer.invoke('prefs:set', next),
+  onPrefsChanged: on('prefs:changed'),
+
   // Installed fonts
   findFont: (names) => ipcRenderer.invoke('fonts:find', names),
 
