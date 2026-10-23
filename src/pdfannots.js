@@ -39,7 +39,6 @@ function hexColor(hex) {
 export async function writeAnnotations(ctx, list) {
   const { doc, page, vp } = ctx;
   const context = doc.context;
-  const refs = new Map(); // annotation id -> ref, so replies can point at their parent
   const rotation = vp.rotation;
   const gsMultiply = context.obj({ Type: 'ExtGState', BM: 'Multiply', ca: 0.4, CA: 0.4 });
 
@@ -71,7 +70,18 @@ export async function writeAnnotations(ctx, list) {
     dict.set(PDFName.of(DATA_KEY), PDFHexString.fromText(JSON.stringify({ v: 1, rot: rotation, a })));
     const ref = context.register(dict);
     page.node.addAnnot(ref);
-    refs.set(a.id, ref);
+    // Replies are hidden notes pointing at their parent (In Reply To): the
+    // standard way to thread comments, so other viewers show the conversation.
+    for (const reply of a.replies || []) {
+      const blank = context.register(context.formXObject([], { BBox: rectArray(rect) }));
+      const rd = context.obj({
+        Type: 'Annot', Subtype: 'Text', Rect: rectArray(rect), F: 4 | 2, Name: 'Comment',
+        NM: PDFString.of(reply.id), M: PDFString.of(pdfDate(reply.date)), IRT: ref, RT: 'R', P: page.ref, AP: { N: blank },
+      });
+      if (reply.author) rd.set(PDFName.of('T'), PDFHexString.fromText(reply.author));
+      rd.set(PDFName.of('Contents'), PDFHexString.fromText(reply.text || ''));
+      page.node.addAnnot(context.register(rd));
+    }
     return { ref, dict };
   };
 
@@ -182,8 +192,7 @@ export async function writeAnnotations(ctx, list) {
         break;
       }
       case 'note': {
-        // Sticky note: a 20×20 icon at its point; replies are separate notes that
-        // reference the first (In Reply To), the standard way to thread comments.
+        // Sticky note: a 20×20 icon at its point.
         const o = ctx.pt(a.x, a.y);
         const rect = { x: o.x, y: o.y - 20, width: 20, height: 20 };
         const [r1, g1, b1] = hexColor(a.color || '#ffd400');
@@ -191,17 +200,7 @@ export async function writeAnnotations(ctx, list) {
           ...drawRectangle({ x: rect.x + 1, y: rect.y + 1, width: 18, height: 18, color: rgb(r1, g1, b1), borderColor: rgb(r1 * 0.6, g1 * 0.6, b1 * 0.6), borderWidth: 1, rotate: deg0, xSkew: deg0, ySkew: deg0 }),
           ...[6, 10, 14].map((dy) => drawLine({ start: { x: rect.x + 5, y: rect.y + 20 - dy }, end: { x: rect.x + 15, y: rect.y + 20 - dy }, thickness: 1, color: rgb(r1 * 0.45, g1 * 0.45, b1 * 0.45) })).flat(),
         ];
-        const { ref: parent } = add(a, 'Text', rect, { Name: 'Comment', Open: false }, ops);
-        for (const reply of a.replies || []) {
-          const appearance = context.register(context.formXObject([], { BBox: rectArray(rect) }));
-          const rd = context.obj({
-            Type: 'Annot', Subtype: 'Text', Rect: rectArray(rect), F: 4 | 2 /* hidden: shown in the thread */, Name: 'Comment',
-            NM: PDFString.of(reply.id), M: PDFString.of(pdfDate(reply.date)), IRT: parent, RT: 'R', P: page.ref, AP: { N: appearance },
-          });
-          if (reply.author) rd.set(PDFName.of('T'), PDFHexString.fromText(reply.author));
-          rd.set(PDFName.of('Contents'), PDFHexString.fromText(reply.text || ''));
-          page.node.addAnnot(context.register(rd));
-        }
+        add(a, 'Text', rect, { Name: 'Comment', Open: false }, ops);
         break;
       }
     }

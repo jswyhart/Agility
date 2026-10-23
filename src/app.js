@@ -226,6 +226,7 @@ function markDirty() {
   state.dirty = true;
   state.version = (state.version || 0) + 1;
   updateUI();
+  scheduleComments();
 }
 
 // ---- Crash recovery -------------------------------------------------------------
@@ -325,6 +326,7 @@ async function openDocument({ data, path = null, name = 'Untitled.pdf' }) {
   setZoom('fit-width');
   viewerEl.scrollTop = 0;
   updateUI();
+  renderComments();
 }
 
 async function openPath(filePath) {
@@ -919,6 +921,16 @@ function annotElement(a) {
     case 'highlight':
       el.style.background = hexToRgba(a.color, 0.4);
       break;
+    case 'note': {
+      // A fixed on-screen size, like other viewers' comment icons.
+      el.style.width = el.style.height = '22px';
+      const icon = div('icon');
+      icon.style.background = a.color || '#ffd400';
+      icon.innerHTML = '<svg viewBox="0 0 24 24"><path d="M6 8h12M6 12h12M6 16h7"/></svg>';
+      el.append(icon);
+      el.title = a.text || 'Comment';
+      break;
+    }
     case 'markup':
       for (const r of a.rects) {
         const part = div(`mark ${a.kind}`);
@@ -972,6 +984,7 @@ function updateAnnotElement(i, a) {
 
 function select(sel) {
   state.selected = sel;
+  markActiveComment();
   for (const el of document.querySelectorAll('.annot.selected')) el.classList.remove('selected');
   if (!sel) return;
   state.views[sel.page]?.annots.querySelector(`[data-id="${sel.id}"]`)?.classList.add('selected');
@@ -1121,6 +1134,8 @@ function selectForClicks(content, at, clicks) {
 }
 
 function onPageDoubleClick(e, i) {
+  const note = document.elementFromPoint(e.clientX, e.clientY)?.closest('.annot.note');
+  if (note) return openComment(note.dataset.id);
   // The drag started on pointerdown captures the pointer, so the event targets the
   // layer itself; look up what is actually under the cursor.
   const el = document.elementFromPoint(e.clientX, e.clientY)?.closest('.annot.text');
@@ -1200,6 +1215,21 @@ function onPagePointerDown(e, i) {
     annotsOf(i).push(a);
     updateAnnotElement(i, a);
     afterClick(e, () => editText(i, a.id, before, true));
+    return;
+  }
+
+  if (tool === 'note') {
+    const p = pagePoint(e, i);
+    const a = { id: uid(), type: 'note', x: p.x - 4, y: p.y - 4, w: 20, h: 20, text: '', color: '#ffd400', author: state.userName, date: new Date().toISOString(), replies: [] };
+    pushUndo();
+    annotsOf(i).push(a);
+    renderAnnotations(i);
+    markDirty();
+    afterClick(e, () => {
+      setTool('select');
+      select({ page: i, id: a.id });
+      openComment(a.id);
+    });
     return;
   }
 
@@ -1491,6 +1521,7 @@ selPopup.addEventListener('click', (e) => {
   const b = e.target.closest('button');
   if (!b) return;
   if (b.dataset.markup) applyTextMarkup(b.dataset.markup);
+  if (b.dataset.sel === 'comment' && applyTextMarkup('highlight')) openComment(state.selected?.id);
   if (b.dataset.sel === 'copy') {
     navigator.clipboard.writeText(getSelection().toString());
     hideSelectionPopup();
@@ -2087,6 +2118,135 @@ async function runOcr() {
   });
 }
 
+// ---- Comments panel ---------------------------------------------------------------------
+
+const commentsEl = $('#comments');
+const commentList = $('#comment-list');
+const COMMENT_LABEL = {
+  note: 'Comment', highlight: 'Highlight', rect: 'Rectangle', ellipse: 'Ellipse', line: 'Line',
+  arrow: 'Arrow', pen: 'Drawing', text: 'Text box',
+  markup: { highlight: 'Highlight', underline: 'Underline', strike: 'Strikethrough' },
+};
+
+// Comments and text markup always appear; other markup once it has a note or replies.
+const isCommentable = (a) => a.type === 'note' || a.type === 'markup'
+  || (isAnnotationType(a) && !!(a.note || a.replies?.length));
+
+function toggleComments(show = commentsEl.classList.contains('hidden')) {
+  commentsEl.classList.toggle('hidden', !show);
+  if (show) renderComments();
+  if (state.zoomMode) setZoom(state.zoomMode);
+}
+
+let commentsTimer = 0;
+function scheduleComments() {
+  clearTimeout(commentsTimer);
+  commentsTimer = setTimeout(renderComments, 50);
+}
+
+function markActiveComment() {
+  for (const el of commentList.querySelectorAll('.comment')) el.classList.toggle('active', el.dataset.id === state.selected?.id);
+}
+
+// Show a comment (creating its card if needed) and put the cursor in its note.
+function openComment(id) {
+  if (!id) return;
+  toggleComments(true);
+  renderComments(true);
+  const card = commentList.querySelector(`[data-id="${CSS.escape(id)}"]`);
+  card?.scrollIntoView({ block: 'nearest' });
+  card?.querySelector('textarea')?.focus();
+}
+
+const shortDate = (iso) => (iso ? new Date(iso).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '');
+
+function renderComments(force = false) {
+  if (commentsEl.classList.contains('hidden')) return;
+  // Don't rebuild under the user's cursor; the blur handler re-renders.
+  if (!force && commentList.contains(document.activeElement)) return;
+  const groups = state.pageIds.map((id, i) => ({ i, list: (state.annotations[id] || []).filter(isCommentable) }));
+  const cards = [];
+  for (const { i, list } of groups) {
+    if (!list.length) continue;
+    cards.push(Object.assign(div('comment-page'), { textContent: `Page ${i + 1}` }));
+    for (const a of list) cards.push(commentCard(i, a));
+  }
+  if (!cards.length) {
+    cards.push(Object.assign(div('comment-empty'), {
+      textContent: 'No comments yet. Use the Comment tool (N), or select text and choose Comment.',
+    }));
+  }
+  commentList.replaceChildren(...cards);
+  markActiveComment();
+}
+
+function commentCard(i, a) {
+  const card = div('comment');
+  card.dataset.id = a.id;
+  const label = a.type === 'markup' ? COMMENT_LABEL.markup[a.kind] : COMMENT_LABEL[a.type];
+  card.innerHTML = `<div class="head"><span class="kind"></span><span class="who"></span><span class="when"></span>
+    <button class="del" title="Delete">×</button></div>`;
+  card.querySelector('.kind').style.background = a.color || '#ffd400';
+  card.querySelector('.who').textContent = `${a.author || 'Unknown'} · ${label}`;
+  card.querySelector('.when').textContent = shortDate(a.date);
+  if (a.type === 'markup' && a.text) {
+    card.append(Object.assign(document.createElement('p'), { className: 'quote', textContent: `“${a.text}”` }));
+  }
+  const field = a.type === 'note' ? 'text' : 'note';
+  const note = Object.assign(document.createElement('textarea'), {
+    value: a[field] || '', placeholder: a.type === 'note' ? 'Write a comment…' : 'Add a note…', rows: 2,
+    disabled: !canEdit(),
+  });
+  let before = null;
+  note.addEventListener('focus', () => (before = snapshot()));
+  note.addEventListener('input', () => (a[field] = note.value));
+  note.addEventListener('blur', () => {
+    if (before && JSON.stringify(before.annotations) !== JSON.stringify(state.annotations)) {
+      pushUndo(before);
+      markDirty();
+      renderAnnotations(i);
+    }
+    before = null;
+    scheduleComments();
+  });
+  card.append(note);
+  for (const r of a.replies || []) {
+    const reply = div('reply');
+    reply.innerHTML = '<span class="who"></span> <span class="when"></span><p></p>';
+    reply.querySelector('.who').textContent = r.author || 'Unknown';
+    reply.querySelector('.when').textContent = shortDate(r.date);
+    reply.querySelector('p').textContent = r.text;
+    card.append(reply);
+  }
+  if (canEdit()) {
+    const input = Object.assign(document.createElement('input'), { className: 'reply-input', placeholder: 'Reply…' });
+    input.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || !input.value.trim()) return;
+      pushUndo();
+      (a.replies ||= []).push({ id: uid(), author: state.userName, date: new Date().toISOString(), text: input.value.trim() });
+      input.value = '';
+      markDirty();
+      renderComments(true);
+      commentList.querySelector(`[data-id="${CSS.escape(a.id)}"] .reply-input`)?.focus();
+    });
+    card.append(input);
+  }
+  card.querySelector('.del').hidden = !canEdit();
+  card.querySelector('.del').addEventListener('click', (e) => {
+    e.stopPropagation();
+    select({ page: i, id: a.id });
+    deleteSelected();
+  });
+  card.addEventListener('click', (e) => {
+    if (e.target.closest('textarea, input, button')) return;
+    select({ page: i, id: a.id });
+    const el = state.views[i]?.annots.querySelector(`[data-id="${CSS.escape(a.id)}"]`);
+    if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    else scrollToPage(i);
+  });
+  return card;
+}
+
 // ---- Form fields ---------------------------------------------------------------------
 
 async function renderForms(i) {
@@ -2502,6 +2662,8 @@ const actions = {
   save: () => save(),
   'save-as': () => save({ saveAs: true }),
   'save-flattened': () => saveFlattened(),
+  'toggle-comments': () => toggleComments(),
+  'tool-note': () => setTool('note'),
   'save-and-close': async () => {
     if (await save()) api.forceClose();
     else api.closeCancelled();
@@ -2647,7 +2809,7 @@ window.addEventListener('resize', () => {
   }, 100);
 });
 
-const TOOL_KEYS = { v: 'select', x: 'edittext', t: 'text', p: 'pen', h: 'highlight', u: 'underline', k: 'strike', r: 'rect', e: 'ellipse', l: 'line', a: 'arrow', w: 'whiteout', i: 'image', s: 'signature' };
+const TOOL_KEYS = { v: 'select', x: 'edittext', n: 'note', t: 'text', p: 'pen', h: 'highlight', u: 'underline', k: 'strike', r: 'rect', e: 'ellipse', l: 'line', a: 'arrow', w: 'whiteout', i: 'image', s: 'signature' };
 document.addEventListener('keydown', (e) => {
   if (isEditable(e.target) || !$('#modal').hidden || !state.pdf) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;

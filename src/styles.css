@@ -188,6 +188,37 @@ select:focus, input:focus { border-color: var(--select); }
 .annot.text .content:empty::before { content: "Type here"; color: #999; }
 .annot.image img { width: 100%; height: 100%; display: block; pointer-events: none; }
 
+/* ---- Comments ------------------------------------------------------------------ */
+.comments { width: 300px; flex: none; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--border); }
+.comments.hidden { display: none; }
+.comment-list { flex: 1; overflow-y: auto; padding: 8px; }
+.comment-empty { color: var(--muted); padding: 20px 12px; text-align: center; line-height: 1.5; }
+.comment-page { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin: 12px 4px 6px; }
+.comment {
+  background: var(--panel-2); border: 1px solid transparent; border-radius: 8px; padding: 10px; margin-bottom: 8px; cursor: pointer;
+}
+.comment.active { border-color: var(--select); }
+.comment .head { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.comment .kind { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.comment .who { font-weight: 600; }
+.comment .when { color: var(--muted); margin-left: auto; font-size: 11px; }
+.comment .del { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 14px; }
+.comment .del:hover { color: var(--accent); }
+.comment .quote { color: var(--muted); font-style: italic; margin: 6px 0 0; font-size: 12px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.comment textarea, .comment .reply-input {
+  width: 100%; margin-top: 6px; resize: vertical; min-height: 34px; padding: 6px 8px; border-radius: 6px;
+  background: var(--panel); border: 1px solid var(--border); outline: none; font: inherit; font-size: 12px;
+}
+.comment textarea:focus, .comment .reply-input:focus { border-color: var(--select); }
+.comment .reply-input { min-height: 0; height: 28px; resize: none; }
+.comment .reply { border-left: 2px solid var(--border); margin: 8px 0 0 4px; padding-left: 8px; font-size: 12px; }
+.comment .reply .who { font-size: 11px; }
+.comment .reply p { margin: 2px 0 0; white-space: pre-wrap; }
+.annot.note { cursor: pointer; }
+.annot.note .icon { width: 100%; height: 100%; border-radius: 3px; box-shadow: 0 1px 3px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; }
+.annot.note .icon svg { width: 70%; height: 70%; stroke: rgba(0,0,0,0.55); }
+.viewer[data-tool="note"] .page { cursor: copy; }
+
 /* ---- Text layer (selectable text, adapted from pdf.js's viewer CSS) ----------- */
 .page { --scale-round-x: 1px; --scale-round-y: 1px; }
 .textLayer {

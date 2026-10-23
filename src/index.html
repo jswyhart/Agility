@@ -24,6 +24,9 @@
         <svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M8 9h8M8 12h8M8 15h5"/></svg>
         <span>OCR</span>
       </button>
+      <button class="btn icon" data-action="toggle-comments" data-needs-doc title="Comments panel (⇧⌘C)">
+        <svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8M8 12h5"/></svg>
+      </button>
       <button class="btn icon" data-action="print" data-needs-doc title="Print (⌘P)">
         <svg viewBox="0 0 24 24"><path d="M6 9V3h12v6M6 18H4a1 1 0 0 1-1-1v-6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6a1 1 0 0 1-1 1h-2"/><path d="M6 14h12v7H6z"/></svg>
       </button>
@@ -44,6 +47,9 @@
       </button>
       <button class="tool" data-tool="edittext" data-needs-edit title="Edit PDF text (X)">
         <svg viewBox="0 0 24 24"><path d="M4 7V5h11v2M9.5 5v12M7.5 17h4"/><path d="m14 20 .5-2.5L20 12l2 2-5.5 5.5z"/></svg>
+      </button>
+      <button class="tool" data-tool="note" data-needs-edit title="Comment (N)">
+        <svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg>
       </button>
       <button class="tool" data-tool="text" data-needs-edit title="Add text (T)">
         <svg viewBox="0 0 24 24"><path d="M5 5h14M12 5v14M9 19h6"/></svg>
@@ -183,6 +189,14 @@
       </div>
       <div class="pages" id="pages"></div>
     </main>
+
+    <aside class="comments hidden" id="comments">
+      <div class="sidebar-head">
+        <span>Comments</span>
+        <div><button class="btn icon small" data-action="toggle-comments" title="Close">×</button></div>
+      </div>
+      <div class="comment-list" id="comment-list"></div>
+    </aside>
   </div>
 
   <div class="drop-overlay" id="drop-overlay"><div>Drop PDF to open</div></div>
@@ -190,6 +204,7 @@
     <button data-markup="highlight" data-needs-edit title="Highlight (H)"><span class="sw hl"></span>Highlight</button>
     <button data-markup="underline" data-needs-edit title="Underline (U)"><span class="sw ul"></span>Underline</button>
     <button data-markup="strike" data-needs-edit title="Strike through"><span class="sw st"></span>Strike</button>
+    <button data-sel="comment" data-needs-edit title="Highlight and comment">Comment</button>
     <button data-sel="copy" title="Copy (⌘C)">Copy</button>
   </div>
   <div class="toast" id="toast" role="status"></div>
