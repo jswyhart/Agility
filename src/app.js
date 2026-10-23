@@ -306,13 +306,18 @@ async function setPdf(pdf) {
 }
 
 // Rebuild after a structural change, keeping the reader on roughly the same spot.
+// Keep the exact scroll position: jumping to the top of the page would move the
+// text out from under the pointer mid-click (callers that should move, such as
+// inserting a page, scroll afterwards).
 async function reloadBytes(bytes) {
-  const keep = state.current;
+  const { scrollTop, scrollLeft } = viewerEl;
   const pdf = await loadPdfJs(bytes);
   state.bytes = bytes;
   await setPdf(pdf);
   layoutPages();
-  scrollToPage(Math.min(keep, state.pages.length - 1));
+  viewerEl.scrollTop = scrollTop;
+  viewerEl.scrollLeft = scrollLeft;
+  scheduleRender();
   updateUI();
 }
 
@@ -962,10 +967,52 @@ function setTool(tool) {
 // Begin text editing only once the click has finished. Focusing on pointerdown
 // doesn't stick: the browser moves focus again when the button is released.
 // Listening on window also catches a release outside the element that was pressed.
+//
+// Opening an editor can take a moment (editing PDF text reloads the page), so the
+// second and third clicks of a double or triple click may land before it exists.
+// Those clicks only raise the count, which decides what the editor selects when
+// it opens, instead of starting another edit.
+// (Only click events carry the count; pointerdown's detail is always 0.)
+let pendingEdit = null;
+window.addEventListener('click', (e) => {
+  if (pendingEdit) pendingEdit.clicks = Math.max(pendingEdit.clicks, e.detail || 1);
+}, true);
 function afterClick(e, fn) {
   e.preventDefault();
-  const at = { x: e.clientX, y: e.clientY };
-  window.addEventListener('pointerup', () => setTimeout(() => fn(at)), { once: true });
+  if (pendingEdit) return;
+  const edit = (pendingEdit = { at: { x: e.clientX, y: e.clientY }, clicks: 1 });
+  window.addEventListener('pointerup', () => setTimeout(async () => {
+    try {
+      await fn(edit.at);
+    } finally {
+      if (pendingEdit === edit) pendingEdit = null;
+    }
+  }), { once: true });
+}
+
+// Place the caret for a click count: 1 = at the point, 2 = the word, 3+ = everything.
+function selectForClicks(content, at, clicks) {
+  const range = document.createRange();
+  const pos = clicks < 3 && at ? document.caretPositionFromPoint?.(at.x, at.y) : null;
+  if (clicks >= 3) {
+    range.selectNodeContents(content);
+  } else if (pos && content.contains(pos.offsetNode)) {
+    let start = pos.offset;
+    let end = pos.offset;
+    if (clicks === 2 && pos.offsetNode.nodeType === Node.TEXT_NODE) {
+      const text = pos.offsetNode.textContent;
+      const isWord = (ch) => /[\p{L}\p{N}_'’-]/u.test(ch);
+      while (start > 0 && isWord(text[start - 1])) start--;
+      while (end < text.length && isWord(text[end])) end++;
+    }
+    range.setStart(pos.offsetNode, start);
+    range.setEnd(pos.offsetNode, end);
+  } else {
+    range.selectNodeContents(content);
+    range.collapse(false);
+  }
+  getSelection().removeAllRanges();
+  getSelection().addRange(range);
 }
 
 function onPageDoubleClick(e, i) {
@@ -974,7 +1021,7 @@ function onPageDoubleClick(e, i) {
   const el = document.elementFromPoint(e.clientX, e.clientY)?.closest('.annot.text');
   if (!el || state.tool !== 'select' || !canEdit()) return;
   const at = { x: e.clientX, y: e.clientY };
-  setTimeout(() => editText(i, el.dataset.id, snapshot(), false, at));
+  setTimeout(() => editText(i, el.dataset.id, snapshot(), false, at, 2));
 }
 
 function onPagePointerDown(e, i) {
@@ -1156,34 +1203,25 @@ function startDraw(e, i, tool) {
   });
 }
 
-function editText(i, id, before, isNew = false, at = null) {
+function editText(i, id, before, isNew = false, at = null, clicks = pendingEdit?.clicks || 1) {
   const a = findAnnot(i, id);
   if (!a) return;
   select({ page: i, id });
   const el = state.views[i].annots.querySelector(`[data-id="${id}"]`);
   if (!el) return;
   const content = el.querySelector('.content');
+  if (el.classList.contains('editing')) return selectForClicks(content, at, clicks);
   const original = a.text;
   el.classList.add('editing');
   viewerEl.classList.add('text-editing');
   content.contentEditable = 'plaintext-only';
   content.focus();
-  // Put the caret where the user clicked; fall back to the end of the text.
-  let range = null;
-  if (at) {
-    const pos = document.caretPositionFromPoint?.(at.x, at.y);
-    if (pos && content.contains(pos.offsetNode)) {
-      range = document.createRange();
-      range.setStart(pos.offsetNode, pos.offset);
-    }
-  }
-  if (!range) {
-    range = document.createRange();
-    range.selectNodeContents(content);
-    range.collapse(false);
-  }
-  getSelection().removeAllRanges();
-  getSelection().addRange(range);
+  selectForClicks(content, at, clicks);
+  // Once open, a triple-click selects the whole box (the browser would stop at a line).
+  const onClick = (ev) => {
+    if (ev.detail >= 3) selectForClicks(content, null, 3);
+  };
+  content.addEventListener('click', onClick);
 
   const onInput = () => measureText(el, a);
   const onKey = (ev) => {
@@ -1193,6 +1231,7 @@ function editText(i, id, before, isNew = false, at = null) {
   content.addEventListener('input', onInput);
   content.addEventListener('keydown', onKey);
   content.addEventListener('blur', () => {
+    content.removeEventListener('click', onClick);
     content.removeEventListener('input', onInput);
     content.removeEventListener('keydown', onKey);
     viewerEl.classList.remove('text-editing');
@@ -2225,7 +2264,8 @@ api.onOpenPath((p) => enqueue(() => openPath(p)));
 document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-action]');
   if (b && !b.disabled) actions[b.dataset.action]?.();
-  const t = e.target.closest('[data-tool]');
+  // Toolbar buttons only: the viewer also carries data-tool (for cursor styling).
+  const t = e.target.closest('button[data-tool]');
   if (t && !t.disabled) setTool(t.dataset.tool);
 });
 
