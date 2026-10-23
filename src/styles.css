@@ -157,6 +157,7 @@ select:focus, input:focus { border-color: var(--select); }
 .page .textline { position: absolute; pointer-events: auto; cursor: text; border-radius: 2px; }
 .page .textline:hover { outline: 1.5px solid var(--select); background: rgba(59, 130, 246, 0.08); }
 .viewer[data-tool="edittext"] .page .textline { outline: 1px dashed rgba(59, 130, 246, 0.35); }
+.viewer[data-tool="edittext"] .page .textline.para { outline-style: solid; outline-color: rgba(59, 130, 246, 0.25); }
 .viewer.text-editing .edit-lines { display: none; }
 .viewer[data-tool="edittext"] .annot.text { pointer-events: auto; cursor: text; }
 .annot.text.editing { pointer-events: auto; }

@@ -198,9 +198,9 @@ export async function writeAnnotations(ctx, list) {
             ...drawRectangle({ ...b, color: rgb(...hexColor(a.highlight)), borderWidth: 0, rotate: deg0, xSkew: deg0, ySkew: deg0 }),
             popGraphicsState());
         }
-        const lines = ctx.encodable(font, a.text).split('\n');
+        const lines = ctx.layoutLines(a).map((l) => ctx.encodable(font, l));
         lines.forEach((line, k) => {
-          const o = ctx.pt(a.x + a.size * ctx.TEXT_PAD_X, a.y + a.size * (ctx.TEXT_PAD_Y + ctx.textBaseline(a) + 1.2 * k));
+          const o = ctx.pt(a.x + a.size * ctx.TEXT_PAD_X, a.y + a.size * (ctx.TEXT_PAD_Y + ctx.textBaseline(a) + (a.lh || 1.2) * k));
           if (!line) return;
           ops.push(...drawText(font.encodeText(line), {
             color: rgb(...hexColor(a.color)), font: 'F0', size: a.size, rotate: degrees(rotation), xSkew: deg0, ySkew: deg0,

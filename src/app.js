@@ -103,11 +103,12 @@ function textCss(a) {
 const baselineCache = new Map();
 function textBaseline(a) {
   const css = textCss(a);
-  const key = `${css.fontFamily}|${css.fontWeight}|${css.fontStyle}`;
+  const lh = a.lh || 1.2;
+  const key = `${css.fontFamily}|${css.fontWeight}|${css.fontStyle}|${lh}`;
   if (!baselineCache.has(key)) {
     const probe = div('');
     Object.assign(probe.style, {
-      position: 'absolute', visibility: 'hidden', whiteSpace: 'pre', fontSize: '100px', lineHeight: '1.2', ...css,
+      position: 'absolute', visibility: 'hidden', whiteSpace: 'pre', fontSize: '100px', lineHeight: String(lh), ...css,
     });
     const mark = document.createElement('span');
     Object.assign(mark.style, { display: 'inline-block', width: '1px', height: '0', verticalAlign: 'baseline' });
@@ -117,6 +118,42 @@ function textBaseline(a) {
     probe.remove();
   }
   return baselineCache.get(key);
+}
+
+// Lines of a text box as drawn. Wrapped boxes (a.wrap = width) break at spaces
+// using the same font measurements as the on-screen preview, so the saved file
+// wraps exactly as shown.
+const measureCtx = document.createElement('canvas').getContext('2d');
+function layoutLines(a) {
+  const paragraphs = (a.text || '').split('\n');
+  if (!a.wrap) return paragraphs;
+  const css = textCss(a);
+  measureCtx.font = `${css.fontStyle} ${css.fontWeight} ${a.size}px ${css.fontFamily}`;
+  const max = a.wrap - a.size * TEXT_PAD_X * 2;
+  const fits = (t) => measureCtx.measureText(t).width <= max + 0.01;
+  const out = [];
+  for (const para of paragraphs) {
+    let line = '';
+    for (const token of para.split(/(\s+)/)) {
+      if (!token) continue;
+      const candidate = line + token;
+      if (fits(candidate.trimEnd()) || !line.trim()) {
+        line = candidate;
+        // A single word wider than the box breaks between characters.
+        while (!fits(line.trimEnd()) && line.trim().length > 1) {
+          let k = line.length - 1;
+          while (k > 1 && !fits(line.slice(0, k))) k--;
+          out.push(line.slice(0, k));
+          line = line.slice(k);
+        }
+      } else {
+        out.push(line.trimEnd());
+        line = token.trimStart();
+      }
+    }
+    out.push(line.trimEnd());
+  }
+  return out;
 }
 
 const state = {
@@ -1028,6 +1065,8 @@ function annotElement(a) {
       content.style.color = a.color;
       if (a.highlight) content.style.background = hexToRgba(a.highlight, 0.4);
       Object.assign(content.style, textCss(a));
+      if (a.lh) content.style.lineHeight = String(a.lh);
+      if (a.wrap) Object.assign(content.style, { width: `${a.wrap * s}px`, whiteSpace: 'pre-wrap', overflowWrap: 'break-word' });
       el.style.width = el.style.height = '';
       el.append(content);
       break;
@@ -1427,7 +1466,9 @@ function translate(a, orig, dx, dy) {
 }
 
 function resize(a, orig, dx, dy, free) {
-  if (a.type === 'text') {
+  if (a.type === 'text' && a.wrap) {
+    a.wrap = Math.max(a.size * 2, orig.wrap + dx); // reflow; size stays
+  } else if (a.type === 'text') {
     a.size = Math.round(clamp((orig.size * (orig.w + dx)) / orig.w, 4, 400));
   } else if ((a.type === 'image' && !free) || a.type === 'mark') {
     a.w = Math.max(8, orig.w + dx);
@@ -2018,8 +2059,42 @@ async function pageLines(i) {
     l.box = { x: sx, y: sy - l.ascent * l.size, w: ex - sx, h: (l.ascent - l.descent) * l.size };
     result.push(l);
   }
+  result.paragraphs = groupParagraphs(result);
   state.lineCache.set(page, result);
   return result;
+}
+
+// Consecutive lines that read as one paragraph: same size, aligned left edges
+// (a first-line indent is fine) and an even line spacing.
+function groupParagraphs(lines) {
+  const sorted = [...lines].sort((p, q) => p.baseline.y - q.baseline.y || p.baseline.x - q.baseline.x);
+  const paras = [];
+  let cur = null;
+  for (const l of sorted) {
+    const prev = cur?.lines[cur.lines.length - 1];
+    const gap = prev ? l.baseline.y - prev.baseline.y : 0;
+    const joins = prev
+      && Math.abs(l.size - prev.size) < prev.size * 0.15
+      && gap > prev.size * 0.9 && gap < prev.size * 1.65
+      && (cur.lines.length < 2 || Math.abs(gap - cur.gap) < prev.size * 0.25)
+      && (Math.abs(l.baseline.x - cur.left) < prev.size * 0.8 || (cur.lines.length === 1 && l.baseline.x < cur.left && cur.left - l.baseline.x < prev.size * 4));
+    if (joins) {
+      if (cur.lines.length === 1) {
+        cur.gap = gap;
+        cur.left = Math.min(cur.left, l.baseline.x);
+      } else cur.gap = (cur.gap * (cur.lines.length - 1) + gap) / cur.lines.length;
+      cur.lines.push(l);
+    } else {
+      cur = { lines: [l], left: l.baseline.x, gap: 0 };
+      paras.push(cur);
+    }
+  }
+  for (const p of paras) {
+    p.box = unionBox(p.lines.map((l) => l.box));
+    p.width = Math.max(...p.lines.map((l) => l.box.x + l.box.w)) - p.left;
+    p.lines.forEach((l) => (l.para = p));
+  }
+  return paras;
 }
 
 // OCR words on a page grouped back into lines, with character offsets for search.
@@ -2053,19 +2128,28 @@ async function renderEditLines(i) {
     v.el.append(v.editLayer);
   }
   if (state.tool !== 'edittext' || !canEdit()) return v.editLayer.replaceChildren();
-  const lines = [...(await pageLines(i)), ...ocrLines(i)];
+  const pdfLines = await pageLines(i);
+  // Paragraphs edit as one block; Alt-click picks a single line. OCR text edits by line.
+  const targets = [...pdfLines.paragraphs.map((p) => (p.lines.length > 1 ? { block: p, box: p.box } : p.lines[0])), ...ocrLines(i)];
   if (state.views[i] !== v || state.tool !== 'edittext') return;
   const s = state.scale;
-  v.editLayer.replaceChildren(...lines.map((line) => {
-    const el = div('textline');
+  v.editLayer.replaceChildren(...targets.map((target) => {
+    const el = div(target.block ? 'textline para' : 'textline');
     Object.assign(el.style, {
-      left: `${(line.box.x - 1) * s}px`, top: `${(line.box.y - 1) * s}px`,
-      width: `${(line.box.w + 2) * s}px`, height: `${(line.box.h + 2) * s}px`,
+      left: `${(target.box.x - 1) * s}px`, top: `${(target.box.y - 1) * s}px`,
+      width: `${(target.box.w + 2) * s}px`, height: `${(target.box.h + 2) * s}px`,
     });
-    el.title = line.source === 'ocr' ? 'Recognized text — click to edit' : 'Click to edit';
+    el.title = target.source === 'ocr' ? 'Recognized text — click to edit'
+      : target.block ? 'Click to edit the paragraph (Alt-click for one line)' : 'Click to edit';
     el.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       e.stopPropagation();
+      if (target.block && !e.altKey) return afterClick(e, (at) => beginParagraphEdit(i, target.block, at));
+      let line = target;
+      if (target.block) {
+        const y = pagePoint(e, i).y;
+        line = target.block.lines.find((l) => y >= l.box.y - 1 && y <= l.box.y + l.box.h + 1) || target.block.lines[0];
+      }
       afterClick(e, (at) => beginTextEdit(i, line, at));
     });
     return el;
@@ -2121,6 +2205,49 @@ function detectFont(i, line) {
     italic: !!(f?.italic || /italic|oblique/i.test(name)),
   };
 }
+
+// Join a paragraph's lines into running text, undoing line-end hyphenation.
+const joinLines = (lines) => lines.reduce((text, l) => {
+  if (!text) return l.text;
+  if (/[a-z]-$/i.test(text) && /^[a-z]/.test(l.text)) return text.slice(0, -1) + l.text;
+  return `${text.replace(/\s+$/, '')} ${l.text.replace(/^\s+/, '')}`;
+}, '');
+
+function beginParagraphEdit(i, para, at = null) {
+  return enqueue(async () => {
+    if (!canEdit()) return;
+    const first = para.lines[0];
+    const colors = sampleColors(i, para.box);
+    const style = detectFont(i, first);
+    const size = Math.round(first.size * 10) / 10;
+    const text = joinLines(para.lines);
+    const doc = await PDFDocument.load(state.bytes, { updateMetadata: false });
+    const lineTarget = (l) => ({ x: l.x, y: l.y, dx: l.dx, dy: l.dy, length: l.length, size: l.size });
+    const { fontKey } = removeTextLine(doc, i, lineTarget(first), { dryRun: true });
+    style.docFont = await captureFont(doc, i, fontKey, text, api.findFont);
+    if (style.docFont) await fontReady(fontChoice({ ...style, text }));
+    let removed = 0;
+    for (const l of para.lines) removed += removeTextLine(doc, i, lineTarget(l)).removed;
+    if (!removed) return enqueueLater(() => beginTextEdit(i, first, at));
+
+    const id = uid();
+    const a = {
+      id, type: 'text', edit: true, text, size, color: colors.ink, ...style,
+      wrap: para.width + size * TEXT_PAD_X * 2 + 1, lh: Math.round((para.gap / size) * 1000) / 1000,
+    };
+    Object.assign(a, { x: para.left - size * TEXT_PAD_X, y: first.baseline.y - size * (TEXT_PAD_Y + textBaseline(a)) });
+    const before = snapshot();
+    const bytes = await doc.save();
+    pushUndo(before);
+    annotsOf(i).push(a);
+    await reloadBytes(bytes);
+    markDirty();
+    editText(i, id, snapshot(), false, at);
+  });
+}
+
+// Queue work to run after the current queued task finishes.
+const enqueueLater = (fn) => setTimeout(fn);
 
 function beginTextEdit(i, line, at = null) {
   return enqueue(async () => {
@@ -2973,8 +3100,8 @@ async function buildOutput({ flatten = false } = {}) {
           }
           const f = await textFont(a);
           const origin = pt(a.x + a.size * TEXT_PAD_X, a.y + a.size * (TEXT_PAD_Y + textBaseline(a)));
-          page.drawText(encodable(f, a.text), {
-            ...origin, size: a.size, font: f, color: pdfColor(a.color), lineHeight: a.size * 1.2, rotate,
+          page.drawText(encodable(f, layoutLines(a).join('\n')), {
+            ...origin, size: a.size, font: f, color: pdfColor(a.color), lineHeight: a.size * (a.lh || 1.2), rotate,
           });
           break;
         }
@@ -3004,7 +3131,7 @@ async function buildOutput({ flatten = false } = {}) {
     }
     if (annotationList.length) {
       await writeAnnotations({
-        doc, page, vp, pt, arrowHead, encodable, textBaseline, TEXT_PAD_X, TEXT_PAD_Y,
+        doc, page, vp, pt, arrowHead, encodable, textBaseline, layoutLines, TEXT_PAD_X, TEXT_PAD_Y,
         fontFor: textFont,
       }, annotationList);
     }
@@ -3350,4 +3477,4 @@ $('[data-tool="select"]').classList.add('active');
 updateUI();
 
 // Exposed for debugging from DevTools.
-window.agility = { state, actions, buildOutput, applyRedactions, openPath: (p) => enqueue(() => openPath(p)) };
+window.agility = { state, actions, buildOutput, applyRedactions, pageLines, openPath: (p) => enqueue(() => openPath(p)) };

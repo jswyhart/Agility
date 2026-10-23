@@ -13,7 +13,7 @@ Electron, [pdf.js](https://mozilla.github.io/pdf.js/) (rendering and text),
 - Select and copy the document's text, including text recognized by OCR.
 
 **Editing text**
-- **Edit PDF text** (X): click a line to retype it. The original is removed from the page content, not covered, and the replacement keeps its size, color and position. It uses the document's own font when that font (embedded, or the same font installed on this computer) has every character needed; otherwise the closest standard font.
+- **Edit PDF text** (X): click a paragraph to edit it as one block that reflows to its original width and line spacing as you type (Alt-click edits a single line; resizing the box rewraps it), or click a standalone line to retype it. The original is removed from the page content, not covered, and the replacement keeps its size, color and position. It uses the document's own font when that font (embedded, or the same font installed on this computer) has every character needed; otherwise the closest standard font.
 - **Text boxes** (T) in Sans, Serif or Mono with bold and italic. Characters beyond Latin-1 (Cyrillic, Greek, symbols…) use bundled DejaVu fonts.
 - Click places the cursor, double-click selects a word, triple-click selects the whole line.
 
