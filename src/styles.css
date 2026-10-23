@@ -279,6 +279,20 @@ select:focus, input:focus { border-color: var(--select); }
 .sig-item .del { position: absolute; top: -8px; right: -8px; width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--border); background: var(--panel); cursor: pointer; font-size: 12px; line-height: 16px; padding: 0; }
 .sig-remember { margin-right: auto; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 
+.compare-summary { padding: 8px 6px 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.compare-changed .kind { background: #f5a623; }
+.compare-added .kind { background: #2fb36d; }
+.compare-removed .kind { background: #e5484d; }
+.comment .diff { margin: 6px 0 0; font-size: 12px; line-height: 1.5; }
+.comment .diff ins { background: rgba(47, 179, 109, 0.25); text-decoration: none; }
+.comment .diff del { background: rgba(229, 72, 77, 0.2); color: var(--muted); }
+.page .compare-layer { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
+.page .cmp { position: absolute; border-radius: 2px; mix-blend-mode: multiply; }
+.page .cmp.changed { background: rgba(245, 166, 35, 0.28); }
+.page .cmp.added { background: rgba(47, 179, 109, 0.28); }
+.page .cmp.removed { background: #e5484d; border-radius: 50%; mix-blend-mode: normal; }
+.page .cmp.focus { outline: 2px solid var(--select); }
+
 /* ---- Text layer (selectable text, adapted from pdf.js's viewer CSS) ----------- */
 .page { --scale-round-x: 1px; --scale-round-y: 1px; }
 .textLayer {

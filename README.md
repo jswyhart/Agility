@@ -42,6 +42,9 @@ Electron, [pdf.js](https://mozilla.github.io/pdf.js/) (rendering and text),
 - The Bookmarks tab shows the document's outline. Click to jump; add (+), rename (double-click), delete, reorder and nest bookmarks. The outline is only rewritten on save if you changed it.
 - The document's own links work with the Select tool. The Link tool adds links to web pages or to pages in the document; ⌘/Ctrl-click follows them while editing.
 
+**Compare**
+- *Tools ▸ Compare with Another PDF* treats the open document as the newer version. It lists every changed, added and removed passage with word-level highlights, tints those lines in the document, marks removals, and jumps to each change.
+
 **Pages and documents**
 - Rotate, delete, insert blank pages, reorder by dragging thumbnails, and combine PDFs.
 - Extract pages, split into files, and crop.

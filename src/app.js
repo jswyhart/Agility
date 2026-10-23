@@ -16,6 +16,7 @@ import { isEncrypted, decryptPdf } from './decrypt.js';
 import { encryptPdf } from './crypto.js';
 import { readOutline, writeOutline } from './outline.js';
 import { detectFields, addFields, setTabOrder, fieldInfo, applyFieldInfo } from './forms.js';
+import { compareLines } from './diff.js';
 
 const {
   PDFDocument, StandardFonts, rgb, degrees, BlendMode, LineCapStyle,
@@ -494,6 +495,7 @@ function layoutPages() {
     drawHits(i);
   });
   state.tops = state.views.map((v) => v.el.offsetTop);
+  if (state.compare) drawCompareMarks();
   scheduleRender();
 }
 
@@ -2034,7 +2036,12 @@ const unionBox = (boxes) => {
 async function pageLines(i) {
   const page = state.pages[i];
   state.lineCache ||= new WeakMap();
-  if (state.lineCache.has(page)) return state.lineCache.get(page);
+  if (!state.lineCache.has(page)) state.lineCache.set(page, extractLines(page));
+  return state.lineCache.get(page);
+}
+
+// Lines of text on any pdf.js page (also used for documents being compared).
+async function extractLines(page) {
   const tc = await page.getTextContent();
   const vp = page.getViewport({ scale: 1 });
   const lines = [];
@@ -2081,7 +2088,6 @@ async function pageLines(i) {
     result.push(l);
   }
   result.paragraphs = groupParagraphs(result);
-  state.lineCache.set(page, result);
   return result;
 }
 
@@ -3181,6 +3187,106 @@ document.querySelector('.sidebar').addEventListener('click', (e) => {
   });
 });
 
+// ---- Compare ------------------------------------------------------------------------------
+// The open document is the new version; the chosen file is the old one.
+
+const compareEl = $('#compare');
+const compareList = $('#compare-list');
+
+async function compareWith() {
+  if (!state.pdf) return;
+  const file = await api.openPdfDialog();
+  if (!file) return;
+  await enqueue(async () => {
+    toast('Comparing…');
+    let other;
+    try {
+      other = await loadPdfJs(new Uint8Array(file.data));
+    } catch (err) {
+      throw new Error(`Couldn't open “${file.name}”: ${err.message}`);
+    }
+    // Every line of a document, in reading order, with its page and box.
+    const linesOf = async (count, get) => {
+      const out = [];
+      for (let i = 0; i < count; i++) for (const l of await get(i)) out.push({ text: l.text, page: i, box: l.box });
+      return out;
+    };
+    const oldLines = await linesOf(other.numPages, async (i) => extractLines(await other.getPage(i + 1)));
+    const newLines = await linesOf(state.pages.length, pageLines);
+    other.loadingTask.destroy();
+    const hunks = compareLines(oldLines, newLines);
+    state.compare = { name: file.name, hunks, pageIds: [...state.pageIds] };
+    showCompare();
+    drawCompareMarks();
+  });
+}
+
+function closeCompare() {
+  state.compare = null;
+  compareEl.classList.add('hidden');
+  drawCompareMarks();
+  if (state.zoomMode) setZoom(state.zoomMode);
+}
+
+function showCompare() {
+  const { hunks, name } = state.compare;
+  compareEl.classList.remove('hidden');
+  if (state.zoomMode) setZoom(state.zoomMode);
+  const counts = { changed: 0, added: 0, removed: 0 };
+  hunks.forEach((h) => counts[h.kind]++);
+  const head = div('compare-summary');
+  head.textContent = hunks.length
+    ? `${hunks.length} difference${hunks.length > 1 ? 's' : ''} from “${name}”: ${counts.changed} changed, ${counts.added} added, ${counts.removed} removed.`
+    : `No text differences from “${name}”.`;
+  const items = hunks.map((h, k) => {
+    const card = div(`comment compare-${h.kind}`);
+    const page = (h.anchor?.page ?? 0) + 1;
+    card.innerHTML = `<div class="head"><span class="kind"></span><span class="who"></span><span class="when"></span></div><p class="diff"></p>`;
+    card.querySelector('.who').textContent = { changed: 'Changed', added: 'Added', removed: 'Removed' }[h.kind];
+    card.querySelector('.when').textContent = `Page ${page}`;
+    const p = card.querySelector('.diff');
+    const words = h.words || [{ text: (h.kind === 'added' ? h.new : h.old).map((l) => l.text).join(' '), op: h.kind === 'added' ? 'insert' : 'delete' }];
+    for (const w of words) {
+      const span = Object.assign(document.createElement(w.op === 'insert' ? 'ins' : w.op === 'delete' ? 'del' : 'span'), { textContent: w.text });
+      p.append(span);
+    }
+    card.addEventListener('click', () => {
+      compareList.querySelectorAll('.comment').forEach((c) => c.classList.toggle('active', c === card));
+      if (!h.anchor) return;
+      scrollToPage(h.anchor.page, Math.max(0, h.anchor.box.y - 60));
+      drawCompareMarks(k);
+    });
+    return card;
+  });
+  compareList.replaceChildren(head, ...items);
+}
+
+// Tint changed and added lines in the document; mark where text was removed.
+function drawCompareMarks(focus = -1) {
+  for (const v of state.views) v.compareLayer?.replaceChildren();
+  const c = state.compare;
+  if (!c || c.pageIds.join() !== state.pageIds.join()) return; // pages changed since comparing
+  const s = state.scale;
+  c.hunks.forEach((h, k) => {
+    const marks = h.kind === 'removed' ? (h.anchor ? [h.anchor] : []) : h.new;
+    for (const l of marks) {
+      const v = state.views[l.page];
+      if (!v) continue;
+      if (!v.compareLayer) {
+        v.compareLayer = div('compare-layer');
+        v.el.append(v.compareLayer);
+      }
+      const el = div(`cmp ${h.kind}${k === focus ? ' focus' : ''}`);
+      const b = l.box;
+      Object.assign(el.style, h.kind === 'removed'
+        ? { left: `${(b.x - 14) * s}px`, top: `${(b.y - 3) * s}px`, width: '6px', height: '6px' }
+        : { left: `${(b.x - 2) * s}px`, top: `${(b.y - 1) * s}px`, width: `${(b.w + 4) * s}px`, height: `${(b.h + 2) * s}px` });
+      el.title = h.kind === 'removed' ? `Removed: ${h.old.map((o) => o.text).join(' ')}` : h.kind === 'changed' ? 'Changed' : 'Added';
+      v.compareLayer.append(el);
+    }
+  });
+}
+
 function setFormValue(key, value, source) {
   state.formValues[key] = value;
   // Keep every widget of the same field (e.g. a name repeated on each page) in sync.
@@ -3567,6 +3673,8 @@ const actions = {
   'toggle-comments': () => toggleComments(),
   'tool-note': () => setTool('note'),
   'tool-redact': () => setTool('redact'),
+  compare: () => compareWith(),
+  'close-compare': () => closeCompare(),
   preferences: () => openPreferences(),
   unlock: () => enqueue(async () => {
     if (state.readOnly !== 'restricted') return toast('This document is already editable.');

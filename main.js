@@ -493,6 +493,7 @@ function buildMenu() {
       submenu: [
         { label: 'Edit PDF Text', accelerator: 'CmdOrCtrl+E', click: send('tool-edittext') },
         { label: 'Recognize Text (OCR)…', accelerator: 'CmdOrCtrl+Shift+O', click: send('ocr') },
+        { label: 'Compare with Another PDF…', click: send('compare') },
         { type: 'separator' },
         { label: 'Add Comment', click: send('tool-note') },
         { label: 'Sign…', click: send('tool-signature') },
