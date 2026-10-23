@@ -2,7 +2,7 @@
   "name": "agility",
   "productName": "Agility",
   "version": "0.1.0",
-  "description": "Agility — a cross-platform desktop PDF editor: edit text, OCR scans, annotate, sign, fill forms and rearrange pages.",
+  "description": "Agility \u2014 a cross-platform desktop PDF editor: edit text, OCR scans, annotate, sign, fill forms and rearrange pages.",
   "main": "main.js",
   "license": "MIT",
   "author": "Agility",
@@ -24,6 +24,8 @@
     "@tesseract.js-data/eng": "^1.0.0",
     "dejavu-fonts-ttf": "^2.37.3",
     "electron-updater": "^6.8.9",
+    "exceljs": "^4.4.0",
+    "mammoth": "^1.13.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.4.299",
     "tesseract.js": "^7.0.0"
@@ -47,6 +49,7 @@
       "updater.js",
       "src/**/*",
       "package.json",
+      "office.js",
       "!node_modules/@napi-rs/**"
     ],
     "fileAssociations": [
@@ -113,5 +116,8 @@
         "releaseType": "release"
       }
     ]
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
   }
 }

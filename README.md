@@ -52,7 +52,7 @@ Electron, [pdf.js](https://mozilla.github.io/pdf.js/) (rendering and text),
 - *Reduce File Size* re-saves large images at a lower resolution and drops unused data.
 - *Save with Password* writes an AES-128 encrypted copy, with print, copy and edit permissions.
 - **Password-protected PDFs** (RC4, AES-128 and AES-256) open for editing after you enter the password, and are saved with the same password and permissions. If the author disallowed editing, the document stays read-only until you *Unlock* it with the owner password. *Remove Password* saves it unprotected. Decrypted copies are never written to the crash-recovery folder.
-- Export pages as PNG or JPEG, export text, and create a PDF from images.
+- Export pages as PNG or JPEG, export text, export to Word (.docx), and create a PDF from images or from Office files. Office conversion uses LibreOffice when installed; without it, Word .docx and Excel .xlsx/.csv still convert using built-in converters.
 
 **Settings** (⌘/Ctrl ,)
 - Your name for comments, light/dark/system appearance, the zoom documents open at, default colors per tool, default font, size and line width, and whether crash-recovery snapshots are kept. Settings apply to all tabs at once.

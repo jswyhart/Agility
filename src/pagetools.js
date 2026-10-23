@@ -3,6 +3,7 @@
 // app.js passes in what these need (see install()).
 
 import { encryptPdf } from './crypto.js';
+import { buildDocx } from './docx.js';
 
 const { PDFDocument, PDFName, PDFRawStream, PDFNumber, StandardFonts, rgb, degrees, decodePDFRawStream } = window.PDFLib;
 
@@ -22,6 +23,8 @@ export function install(context) {
     'export-images': exportImages,
     'export-text': exportText,
     'from-images': fromImages,
+    'export-word': exportWord,
+    'from-office': () => ctx.api.openOffice(),
     'tool-crop': () => {
       ctx.setTool('crop');
       ctx.toast('Drag the area to keep', { ms: 2500 });
@@ -418,6 +421,25 @@ async function exportText() {
       chunks.push(`--- Page ${i + 1} ---\n${[text.trim(), ocr].filter(Boolean).join('\n')}\n`);
     }
     const res = await ctx.api.saveFile(chunks.join('\n'), `${baseName()}.txt`, { name: 'Text', extensions: ['txt'] });
+    if (res) ctx.toast(`Saved ${res.name}`);
+  });
+}
+
+// Word: each detected paragraph becomes one, with its size and style.
+async function exportWord() {
+  await ctx.enqueue(async () => {
+    const pages = [];
+    for (let i = 0; i < ctx.state.pages.length; i++) {
+      const lines = await ctx.pageLines(i);
+      const paras = lines.paragraphs.map((p) => {
+        const style = ctx.detectFont(i, p.lines[0]);
+        return { text: ctx.joinLines(p.lines), size: Math.round(p.lines[0].size * 2) / 2, ...style };
+      });
+      // Recognized (OCR) text, line by line.
+      for (const l of ctx.ocrLines(i)) paras.push({ text: l.text, size: Math.round(l.size) || 11, font: 'sans' });
+      pages.push(paras);
+    }
+    const res = await ctx.api.saveFile(buildDocx(pages, baseName()), `${baseName()}.docx`, { name: 'Word document', extensions: ['docx'] });
     if (res) ctx.toast(`Saved ${res.name}`);
   });
 }

@@ -11,6 +11,7 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const { setupUpdates, checkForUpdatesNow } = require('./updater');
+const { officeToPdf, OFFICE_EXTENSIONS } = require('./office');
 
 const APP_NAME = 'Agility';
 const ROOT = __dirname;
@@ -416,6 +417,7 @@ function buildMenu() {
         { label: 'Open…', accelerator: 'CmdOrCtrl+O', click: menuOpen },
         { label: 'Open Recent', submenu: recentItems },
         { label: 'Create PDF from Images…', click: send('from-images') },
+        { label: 'Create PDF from Office File…', click: send('from-office') },
         { type: 'separator' },
         { label: 'Save', accelerator: 'CmdOrCtrl+S', click: send('save') },
         { label: 'Save As…', accelerator: 'CmdOrCtrl+Shift+S', click: send('save-as') },
@@ -428,6 +430,7 @@ function buildMenu() {
           submenu: [
             { label: 'Pages as Images…', click: send('export-images') },
             { label: 'Text…', click: send('export-text') },
+            { label: 'Word Document…', click: send('export-word') },
           ],
         },
         { label: 'Print…', accelerator: 'CmdOrCtrl+P', click: send('print') },
@@ -635,6 +638,31 @@ ipcMain.handle('images:open-dialog', async (e) => {
 ipcMain.handle('pdf:open-bytes', (e, data, name) => {
   const owner = tabFor(e.sender)?.owner || focusedWindow() || new DocWindow();
   owner.addTab({ restore: { meta: { fileName: name, filePath: null, fresh: true }, bytes: data } });
+});
+
+// Office files open as new PDF tabs.
+async function openOfficeFiles(files, owner) {
+  for (const file of files) {
+    try {
+      const { name, data } = await officeToPdf(file);
+      (owner || focusedWindow() || newWindow()).addTab({ restore: { meta: { fileName: name, filePath: null, fresh: true }, bytes: data } });
+    } catch (err) {
+      dialog.showMessageBox(owner?.win, { type: 'warning', message: `Couldn't convert “${path.basename(file)}”.`, detail: err.message });
+    }
+  }
+}
+
+ipcMain.handle('office:open', async (e, paths) => {
+  const owner = tabFor(e.sender)?.owner;
+  let files = paths;
+  if (!files) {
+    ({ filePaths: files } = await dialogs.open(owner?.win, {
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Office documents', extensions: OFFICE_EXTENSIONS }],
+    }));
+  }
+  if (files?.length) await openOfficeFiles(files, owner);
+  return files?.length || 0;
 });
 
 ipcMain.handle('app:info', () => ({

@@ -3736,6 +3736,7 @@ const actions = {
 Object.assign(actions, installPageTools({
   state, api, modal, button, toast, enqueue, mutateDocument, buildOutput, setTool, annotsOf, translate,
   snapshot, pushUndo, reloadBytes, markDirty, collectGarbage, loadPdfJs, encodable, pdfColor, ocrLines,
+  pageLines, detectFont, joinLines,
 }));
 
 const pageMenu = $('#page-menu');
@@ -3751,7 +3752,7 @@ document.addEventListener('pointerdown', (e) => {
 });
 
 api.onMenu((action) => {
-  if (!state.pdf && !['open', 'toggle-sidebar', 'from-images', 'preferences'].includes(action)) return;
+  if (!state.pdf && !['open', 'toggle-sidebar', 'from-images', 'from-office', 'preferences'].includes(action)) return;
   actions[action]?.();
 });
 api.onOpenPath((p) => enqueue(() => openPath(p)));
@@ -3916,8 +3917,10 @@ window.addEventListener('drop', (e) => {
   e.preventDefault();
   dragDepth = 0;
   $('#drop-overlay').classList.remove('show');
+  const office = [...e.dataTransfer.files].filter((f) => /\.(docx?|odt|rtf|xlsx|xlsm|xls|ods|csv|pptx?|odp)$/i.test(f.name)).map((f) => api.pathForFile(f)).filter(Boolean);
+  if (office.length) return api.openOffice(office);
   const file = [...e.dataTransfer.files].find((f) => /\.pdf$/i.test(f.name) || f.type === 'application/pdf');
-  if (!file) return toast('Drop a PDF file to open it.', { error: true });
+  if (!file) return toast('Drop a PDF or Office file to open it.', { error: true });
   const filePath = api.pathForFile(file);
   // A tab holds one document; dropping onto a tab that has one opens a new tab.
   if (filePath && state.pdf) return api.openFiles([filePath]);
