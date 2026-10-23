@@ -420,7 +420,7 @@ function buildPages() {
   pagesEl.replaceChildren();
   state.views = state.pages.map((_, i) => {
     const el = div('page');
-    const canvas = Object.assign(document.createElement('canvas'), { className: 'render' });
+    const canvas = Object.assign(document.createElement('canvas'), { className: 'render', width: 0, height: 0 });
     const text = div('textLayer');
     const hits = div('hits');
     const annots = div('annots');
@@ -435,18 +435,79 @@ function buildPages() {
   });
 }
 
+// Size every page, then let renderVisible() fill in the ones near the view.
+// Overlays that are cheap (markup, search hits) are laid out everywhere; form
+// fields and edit-text targets only for pages near the view.
 function layoutPages() {
   state.views.forEach((v, i) => {
     const vp = baseViewport(i);
     v.el.style.width = `${vp.width * state.scale}px`;
     v.el.style.height = `${vp.height * state.scale}px`;
     v.el.style.setProperty('--total-scale-factor', state.scale);
+    v.formsScale = 0;
+    v.editKey = null;
     renderAnnotations(i);
-    renderForms(i);
     drawHits(i);
-    renderEditLines(i);
   });
+  state.tops = state.views.map((v) => v.el.offsetTop);
   scheduleRender();
+}
+
+// First page whose top is below y (pages are stacked in order).
+function pageAt(y) {
+  const tops = state.tops || [];
+  let lo = 0;
+  let hi = tops.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (tops[mid] <= y) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+// Pages within a screen of the view get rendered; ones far away give their
+// canvas and text layer back, so memory stays flat however long the document.
+const KEEP_SCREENS = 4;
+function renderVisible() {
+  if (!state.views.length) return;
+  const top = viewerEl.scrollTop;
+  const h = viewerEl.clientHeight;
+  const first = pageAt(top - h);
+  const last = pageAt(top + 2 * h);
+  for (let i = first; i <= last; i++) {
+    const v = state.views[i];
+    if (v.renderedScale !== state.scale) renderPage(i);
+    else if (v.textScale !== state.scale && !v.task) renderTextLayer(i, state.scale);
+    if (v.formsScale !== state.scale) renderForms(i);
+    const editKey = `${state.tool}|${state.scale}`;
+    if (v.editKey !== editKey) {
+      v.editKey = editKey;
+      renderEditLines(i);
+    }
+  }
+  const keepFrom = pageAt(top - KEEP_SCREENS * h);
+  const keepTo = pageAt(top + (KEEP_SCREENS + 1) * h);
+  state.views.forEach((v, i) => {
+    if ((i < keepFrom || i > keepTo) && (v.renderedScale || v.textScale)) releasePage(v);
+  });
+}
+
+// Edit-text targets are rebuilt lazily for the pages near the view.
+function refreshEditLines() {
+  for (const v of state.views) v.editKey = null;
+  scheduleRender();
+}
+
+function releasePage(v) {
+  v.task?.cancel();
+  v.textLayer?.cancel();
+  const blank = Object.assign(document.createElement('canvas'), { className: 'render', width: 0, height: 0 });
+  v.canvas.replaceWith(blank);
+  v.canvas = blank;
+  v.text.replaceChildren();
+  v.renderedScale = 0;
+  v.textScale = 0;
 }
 
 let renderFrame = 0;
@@ -464,15 +525,6 @@ function scheduleRender(delay = 0) {
   else go();
 }
 
-function renderVisible() {
-  const vr = viewerEl.getBoundingClientRect();
-  state.views.forEach((v, i) => {
-    const r = v.el.getBoundingClientRect();
-    if (r.bottom < vr.top - vr.height || r.top > vr.bottom + vr.height) return;
-    if (v.renderedScale !== state.scale) renderPage(i);
-    else if (v.textScale !== state.scale && !v.task) renderTextLayer(i, state.scale);
-  });
-}
 
 async function renderPage(i) {
   const v = state.views[i];
@@ -552,14 +604,7 @@ function refreshTextLayers() {
 
 function updateCurrentPage() {
   if (!state.views.length) return;
-  const vr = viewerEl.getBoundingClientRect();
-  const probe = vr.top + vr.height * 0.35;
-  let cur = 0;
-  for (let i = 0; i < state.views.length; i++) {
-    if (state.views[i].el.getBoundingClientRect().top <= probe) cur = i;
-    else break;
-  }
-  setCurrent(cur);
+  setCurrent(pageAt(viewerEl.scrollTop + viewerEl.clientHeight * 0.35));
 }
 
 function setCurrent(i) {
@@ -685,19 +730,43 @@ function buildThumbs() {
   renderThumbs(gen);
 }
 
-async function renderThumbs(gen) {
-  const ratio = window.devicePixelRatio || 1;
-  for (let i = 0; i < state.thumbs.length; i++) {
-    if (gen !== state.thumbGen) return;
-    const t = state.thumbs[i];
-    const vp = state.pages[i].getViewport({ scale: t.scale * ratio });
-    t.canvas.width = Math.floor(vp.width);
-    t.canvas.height = Math.floor(vp.height);
-    try {
-      await state.pages[i].render({ canvasContext: t.canvas.getContext('2d'), viewport: vp }).promise;
-    } catch {
-      /* document replaced mid-render */
+// Thumbnails render as they scroll into the sidebar and are dropped again when
+// they scroll far away.
+let thumbObserver = null;
+function renderThumbs(gen) {
+  thumbObserver?.disconnect();
+  thumbObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const i = Number(entry.target.dataset.index);
+      const t = state.thumbs[i];
+      if (!t || gen !== state.thumbGen) continue;
+      if (entry.isIntersecting) renderThumb(i, gen);
+      else if (t.rendered && Math.abs(i - state.current) > 60) {
+        t.task?.cancel();
+        t.canvas.width = t.canvas.height = 0;
+        t.rendered = false;
+      }
     }
+  }, { root: thumbsEl, rootMargin: '600px 0px' });
+  state.thumbs.forEach((t, i) => {
+    t.el.dataset.index = i;
+    thumbObserver.observe(t.el);
+  });
+}
+
+async function renderThumb(i, gen) {
+  const t = state.thumbs[i];
+  if (t.rendered) return;
+  t.rendered = true;
+  const ratio = window.devicePixelRatio || 1;
+  const vp = state.pages[i].getViewport({ scale: t.scale * ratio });
+  t.canvas.width = Math.floor(vp.width);
+  t.canvas.height = Math.floor(vp.height);
+  t.task = state.pages[i].render({ canvasContext: t.canvas.getContext('2d'), viewport: vp });
+  try {
+    await t.task.promise;
+  } catch {
+    if (gen === state.thumbGen) t.rendered = false; // cancelled or document replaced
   }
 }
 
@@ -1143,7 +1212,7 @@ function setTool(tool) {
     state.editHintShown = true;
     toast('Click any line of text to edit it. Run OCR first to edit scanned pages.', { ms: 4000 });
   }
-  state.views.forEach((_, i) => renderEditLines(i));
+  refreshEditLines();
 }
 
 // Begin text editing only once the click has finished. Focusing on pointerdown
@@ -2227,7 +2296,7 @@ async function runOcr() {
     if (done) {
       pushUndo(before);
       markDirty();
-      state.views.forEach((_, i) => renderEditLines(i));
+      refreshEditLines();
       refreshTextLayers();
       if (state.find) runFind(findInput.value);
     }
@@ -2594,6 +2663,7 @@ async function renderForms(i) {
   }
   if (state.views[i] !== v) return;
   const s = state.scale;
+  v.formsScale = s;
   const vp = page.getViewport({ scale: s });
   const els = [];
   for (const w of v.widgets) {
