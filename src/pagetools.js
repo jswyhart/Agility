@@ -151,16 +151,21 @@ async function pageNumbers() {
     return { pages, pos: box.querySelector('.pos').value, fmt: box.querySelector('.fmt').value, start: Number(box.querySelector('.start').value) || 0, size: Number(box.querySelector('.size').value) || 10 };
   });
   if (!opts) return;
-  await ctx.mutateDocument(async (doc) => {
-    const font = await doc.embedFont(StandardFonts.Helvetica);
-    opts.pages.forEach((i, k) => {
-      const vp = ctx.state.pages[i].getViewport({ scale: 1 });
-      const text = fill(opts.fmt, { n: opts.start + k, total: opts.start + opts.pages.length - 1 });
-      const at = placeAt(opts.pos, vp, font.widthOfTextAtSize(text, opts.size), opts.size);
-      drawScreenText(doc.getPage(i), vp, font, text, { ...at, size: opts.size, color: rgb(0.2, 0.2, 0.2) });
-    });
-  });
+  const viewports = ctx.state.pages.map((p) => p.getViewport({ scale: 1 }));
+  await ctx.mutateDocument((doc) => stampNumbers(doc, viewports, opts));
   ctx.toast(`Numbered ${opts.pages.length} pages`);
+}
+
+// Page numbers on opts.pages (all pages if omitted). viewports: screen geometry per page.
+export async function stampNumbers(doc, viewports, opts) {
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const pages = opts.pages || viewports.map((_, i) => i);
+  pages.forEach((i, k) => {
+    const vp = viewports[i];
+    const text = fill(opts.fmt, { n: opts.start + k, total: opts.start + pages.length - 1 });
+    const at = placeAt(opts.pos, vp, font.widthOfTextAtSize(text, opts.size), opts.size);
+    drawScreenText(doc.getPage(i), vp, font, text, { ...at, size: opts.size, color: rgb(0.2, 0.2, 0.2) });
+  });
 }
 
 async function headerFooter() {
@@ -211,20 +216,23 @@ async function watermark() {
     return { text, pages, size: Number(box.querySelector('.size').value) || 64, opacity: Number(box.querySelector('.op').value) / 100, angle: Number(box.querySelector('.ang').value), color: box.querySelector('.c').value };
   });
   if (!opts) return;
-  await ctx.mutateDocument(async (doc) => {
-    const font = await doc.embedFont(StandardFonts.HelveticaBold);
-    const text = ctx.encodable(font, opts.text);
-    const w = font.widthOfTextAtSize(text, opts.size);
-    const t = (opts.angle * Math.PI) / 180;
-    for (const i of opts.pages) {
-      const vp = ctx.state.pages[i].getViewport({ scale: 1 });
-      // Centre the text on the page along its (screen) direction.
-      const cx = vp.width / 2 - (w / 2) * Math.cos(t) + opts.size * 0.35 * Math.sin(t);
-      const cy = vp.height / 2 + (w / 2) * Math.sin(t) + opts.size * 0.35 * Math.cos(t);
-      drawScreenText(doc.getPage(i), vp, font, text, { x: cx, y: cy, size: opts.size, color: ctx.pdfColor(opts.color), opacity: opts.opacity, angle: opts.angle });
-    }
-  });
+  const viewports = ctx.state.pages.map((p) => p.getViewport({ scale: 1 }));
+  await ctx.mutateDocument((doc) => stampWatermark(doc, viewports, opts));
   ctx.toast('Added watermark');
+}
+
+export async function stampWatermark(doc, viewports, opts) {
+  const font = await doc.embedFont(StandardFonts.HelveticaBold);
+  const text = ctx.encodable(font, opts.text);
+  const w = font.widthOfTextAtSize(text, opts.size);
+  const t = (opts.angle * Math.PI) / 180;
+  for (const i of opts.pages || viewports.map((_, k) => k)) {
+    const vp = viewports[i];
+    // Centre the text on the page along its (screen) direction.
+    const cx = vp.width / 2 - (w / 2) * Math.cos(t) + opts.size * 0.35 * Math.sin(t);
+    const cy = vp.height / 2 + (w / 2) * Math.sin(t) + opts.size * 0.35 * Math.cos(t);
+    drawScreenText(doc.getPage(i), vp, font, text, { x: cx, y: cy, size: opts.size, color: ctx.pdfColor(opts.color), opacity: opts.opacity, angle: opts.angle });
+  }
 }
 
 // ---- Crop ------------------------------------------------------------------------------------
@@ -258,7 +266,7 @@ export async function cropTo(i, box) {
 
 // ---- Reduce file size ----------------------------------------------------------------------
 
-const PRESETS = {
+export const PRESETS = {
   high: { maxDim: 2400, quality: 0.85, label: 'High quality' },
   medium: { maxDim: 1600, quality: 0.75, label: 'Balanced' },
   small: { maxDim: 1100, quality: 0.6, label: 'Smallest file' },
@@ -280,7 +288,7 @@ async function reencode(pixelsOrBlob, w, h, preset) {
 
 // Re-encode large photos at a lower resolution. Only simple RGB/gray images are
 // touched (no masks, decode arrays or exotic colour spaces), so nothing changes colour.
-async function shrinkImages(doc, preset) {
+export async function shrinkImages(doc, preset) {
   let count = 0;
   for (const [ref, obj] of doc.context.enumerateIndirectObjects()) {
     if (!(obj instanceof PDFRawStream)) continue;

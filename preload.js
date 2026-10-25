@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   saveFile: (data, suggestedName, filter) => ipcRenderer.invoke('file:save', data, suggestedName, filter),
   saveMany: (files, title) => ipcRenderer.invoke('files:save-many', files, title),
   openImages: () => ipcRenderer.invoke('images:open-dialog'),
+  openPdfs: () => ipcRenderer.invoke('pdfs:open-dialog'),
   openOffice: (paths) => ipcRenderer.invoke('office:open', paths || null),
   pathForFile: (file) => {
     try {

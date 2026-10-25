@@ -17,6 +17,7 @@ import { encryptPdf } from './crypto.js';
 import { readOutline, writeOutline } from './outline.js';
 import { detectFields, addFields, setTabOrder, fieldInfo, applyFieldInfo } from './forms.js';
 import { compareLines } from './diff.js';
+import { installBatch } from './batch.js';
 
 const {
   PDFDocument, StandardFonts, rgb, degrees, BlendMode, LineCapStyle,
@@ -3739,6 +3740,8 @@ Object.assign(actions, installPageTools({
   pageLines, detectFont, joinLines,
 }));
 
+Object.assign(actions, installBatch({ api, modal, button, toast, loadPdfJs, encodable }));
+
 const pageMenu = $('#page-menu');
 $('#page-menu-btn').addEventListener('click', (e) => {
   e.stopPropagation();
@@ -3752,7 +3755,7 @@ document.addEventListener('pointerdown', (e) => {
 });
 
 api.onMenu((action) => {
-  if (!state.pdf && !['open', 'toggle-sidebar', 'from-images', 'from-office', 'preferences'].includes(action)) return;
+  if (!state.pdf && !['open', 'toggle-sidebar', 'from-images', 'from-office', 'preferences', 'batch'].includes(action)) return;
   actions[action]?.();
 });
 api.onOpenPath((p) => enqueue(() => openPath(p)));

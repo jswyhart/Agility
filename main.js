@@ -497,6 +497,7 @@ function buildMenu() {
         { label: 'Edit PDF Text', accelerator: 'CmdOrCtrl+E', click: send('tool-edittext') },
         { label: 'Recognize Text (OCR)…', accelerator: 'CmdOrCtrl+Shift+O', click: send('ocr') },
         { label: 'Compare with Another PDF…', click: send('compare') },
+        { label: 'Batch Process PDFs…', click: send('batch') },
         { type: 'separator' },
         { label: 'Add Comment', click: send('tool-note') },
         { label: 'Sign…', click: send('tool-signature') },
@@ -623,6 +624,12 @@ ipcMain.handle('files:save-many', async (e, files, title) => {
   }
   if (written.length && !TEST_DIR) shell.showItemInFolder(written[0]);
   return { dir, count: written.length };
+});
+
+// Several PDFs at once (batch processing); they aren't opened as tabs.
+ipcMain.handle('pdfs:open-dialog', async (e) => {
+  const files = await showOpenDialog(ownerWindow(e));
+  return Promise.all(files.map(async (p) => ({ name: path.basename(p), data: new Uint8Array(await fs.readFile(p)) })));
 });
 
 ipcMain.handle('images:open-dialog', async (e) => {
