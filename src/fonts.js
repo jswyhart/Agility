@@ -135,3 +135,11 @@ export async function captureFont(doc, pageIndex, fontKey, text, findInstalled) 
 }
 
 export const fontName = (id) => store.get(id)?.name || null;
+
+/** An embeddable stand-in for a standard font (PDF/A needs every font embedded). */
+export function embeddedChoice(a) {
+  const name = dejavuName(a);
+  const family = `AG ${name}`;
+  ensureFace(family, `url(${dejavuUrl(name)})`);
+  return { kind: 'dejavu', name, family: `"${family}"` };
+}

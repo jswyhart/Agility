@@ -59,6 +59,11 @@ Electron, [pdf.js](https://mozilla.github.io/pdf.js/) (rendering and text),
 **Settings** (⌘/Ctrl ,)
 - Your name for comments, light/dark/system appearance, the zoom documents open at, default colors per tool, default font, size and line width, and whether crash-recovery snapshots are kept. Settings apply to all tabs at once.
 
+**Accessibility and archiving**
+- *Document Properties*: title, author, subject, keywords and language, and showing the title in viewers.
+- *Check Accessibility*: title, language, tagging, real text on every page, figure alternate text (tagged files), form field and link descriptions, security settings and embedded fonts. One-click fixes where possible: properties, OCR, generated field and link descriptions.
+- *Save as PDF/A*: a PDF/A-2b copy with XMP metadata, an sRGB output intent (a generated standard profile), embedded fonts for text Agility writes, no scripts, and printable annotations. It lists anything it can't fix, such as fonts the original never embedded. Not checked with a formal validator such as veraPDF.
+
 **Safety**
 - Undo and redo for everything.
 - Unsaved tabs are snapshotted every few seconds and offered back after a crash.
@@ -129,4 +134,5 @@ To build locally: `npm run dist:mac` on a Mac. Linux AppImages (`npx electron-bu
 - **Scanned edits paint over the scan.** Editing scanned text covers the old pixels and retypes the line.
 - **Certificate-encrypted PDFs are view-only.** Only password (Standard) security can be unlocked for editing.
 - **Signatures are not long-term validated.** They carry no timestamp authority or revocation data. A certificate is trusted when it chains to the root certificates bundled with Node.js.
+- **Accessibility fixes don't add tags.** Untagged PDFs are reported but not given a structure tree; re-export them from the source with tags.
 - **OCR is English only.** It uses the bundled English model; other languages can be added with more `@tesseract.js-data/*` packages.

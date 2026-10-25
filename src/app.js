@@ -10,7 +10,8 @@
 import * as pdfjsLib from '../node_modules/pdfjs-dist/build/pdf.mjs';
 import { removeTextLine, redactText, collectGarbage } from './textedit.js';
 import { isAnnotationType, writeAnnotations, takeAnnotations } from './pdfannots.js';
-import { fontChoice, fontBytes, fontReady, captureFont, onFontLoaded } from './fonts.js';
+import { fontChoice, fontBytes, fontReady, captureFont, onFontLoaded, embeddedChoice } from './fonts.js';
+import { readProperties, applyProperties, checkAccessibility, applyFix, toPdfA } from './accessibility.js';
 import { install as installPageTools, cropTo } from './pagetools.js';
 import { isEncrypted, decryptPdf } from './decrypt.js';
 import { encryptPdf } from './crypto.js';
@@ -369,6 +370,7 @@ async function openDocument({ data, path = null, name = 'Untitled.pdf' }) {
   let imported = null;
   let protection = null;
   let viewPassword;
+  let docProps = null;
   if (isEncrypted(bytes)) {
     let unlocked;
     try {
@@ -390,6 +392,7 @@ async function openDocument({ data, path = null, name = 'Untitled.pdf' }) {
     // Markup Agility saved as annotations comes back as editable objects; take it
     // out of the page so it isn't drawn twice.
     const doc = await PDFDocument.load(bytes, { updateMetadata: false });
+    docProps = readProperties(doc);
     imported = takeAnnotations(doc, rotateAnnotation);
     if (imported) bytes = await doc.save();
   } catch (err) {
@@ -414,7 +417,7 @@ async function openDocument({ data, path = null, name = 'Untitled.pdf' }) {
   // Saved links remember their target page by number; map it to this session's page ids.
   for (const a of Object.values(annotations).flat()) if (a.type === 'link' && a.pageIndex != null) a.pageId = pageIds[a.pageIndex];
   Object.assign(state, {
-    bytes, readOnly, protection, original, filePath: path, fileName: name, pageIds, annotations,
+    bytes, readOnly, protection, original, docProps, filePath: path, fileName: name, pageIds, annotations,
     formValues: {}, undo: [], redo: [],
     dirty: false, selected: null, pendingImage: null, find: null, current: 0,
   });
@@ -3448,6 +3451,80 @@ function completeSignature(opts, visible) {
   });
 }
 
+// ---- Properties, accessibility, PDF/A --------------------------------------------------
+
+async function editProperties() {
+  if (!canEdit()) return;
+  const p = state.docProps || {};
+  const next = await modal((m, close) => {
+    m.innerHTML = `<h2>Document properties</h2><div class="form">
+      <label class="field-row">Title <input type="text" class="p-title" /></label>
+      <label class="opt"><input type="checkbox" class="p-display" /> Show the title instead of the file name in viewers</label>
+      <label class="field-row">Author <input type="text" class="p-author" /></label>
+      <label class="field-row">Subject <input type="text" class="p-subject" /></label>
+      <label class="field-row">Keywords <input type="text" class="p-keywords" placeholder="comma, separated" /></label>
+      <label class="field-row">Language <input type="text" class="p-lang" placeholder="en-US" style="width:110px" /></label>
+    </div><div class="actions"></div>`;
+    const q = (c) => m.querySelector(c);
+    q('.p-title').value = p.title || '';
+    q('.p-display').checked = !!p.displayTitle;
+    q('.p-author').value = p.author || '';
+    q('.p-subject').value = p.subject || '';
+    q('.p-keywords').value = p.keywords || '';
+    q('.p-lang').value = p.lang || (navigator.language || '');
+    m.querySelector('.actions').append(button('Cancel', 'secondary', () => close(null)), button('Save', 'primary', () => close({
+      title: q('.p-title').value.trim(), displayTitle: q('.p-display').checked, author: q('.p-author').value.trim(),
+      subject: q('.p-subject').value.trim(), keywords: q('.p-keywords').value.trim(), lang: q('.p-lang').value.trim(),
+    })));
+  });
+  if (!next) return;
+  state.docProps = next;
+  markDirty();
+  toast('Properties will be saved with the document');
+}
+
+async function accessibilityCheck() {
+  const doc = await PDFDocument.load(await buildOutput(), { updateMetadata: false });
+  const results = await checkAccessibility(doc, state.pdf, { protection: state.protection });
+  const fix = await modal((m, close) => {
+    const failing = results.filter((r) => r.status !== 'pass').length;
+    m.innerHTML = `<h2>Accessibility check</h2><p>${failing ? `${failing} item${failing > 1 ? 's' : ''} to look at.` : 'Everything checked passes.'}</p><div class="a11y-list"></div><div class="actions"></div>`;
+    const list = m.querySelector('.a11y-list');
+    for (const r of results) {
+      const row = div(`a11y-row ${r.status}`);
+      row.innerHTML = '<span class="mark"></span><div><b></b><p></p></div>';
+      row.querySelector('.mark').textContent = r.status === 'pass' ? '✓' : r.status === 'warn' ? '!' : '✕';
+      row.querySelector('b').textContent = r.label;
+      row.querySelector('p').textContent = r.detail;
+      if (r.fix && canEdit()) row.append(button('Fix', 'secondary small-btn', () => close(r.fix)));
+      list.append(row);
+    }
+    m.querySelector('.actions').append(button('Close', 'primary', () => close(null)));
+  });
+  if (!fix) return;
+  if (fix === 'properties') await editProperties();
+  else if (fix === 'display-title') {
+    state.docProps = { ...(state.docProps || {}), displayTitle: true };
+    markDirty();
+  } else if (fix === 'ocr') return runOcr();
+  else await mutateDocument((d) => applyFix(d, fix));
+  return accessibilityCheck(); // show the updated results
+}
+
+function saveAsPdfA() {
+  return enqueue(async () => {
+    if (!state.pdf || state.readOnly) return;
+    const out = await buildOutput({ pdfa: true });
+    const base = (state.fileName || 'Document').replace(/\.pdf$/i, '');
+    const res = await api.saveAs(out, `${base} (PDF-A).pdf`);
+    if (!res) return;
+    const problems = state.pdfaProblems || [];
+    const notes = [state.protection ? 'PDF/A doesn’t allow passwords, so this copy is unprotected.' : null, ...problems].filter(Boolean);
+    if (notes.length) await confirmModal('Saved as PDF/A-2b, with notes', notes.join(' '), 'OK');
+    else toast(`Saved ${res.name} as PDF/A-2b`);
+  });
+}
+
 function setFormValue(key, value, source) {
   state.formValues[key] = value;
   // Keep every widget of the same field (e.g. a name repeated on each page) in sync.
@@ -3589,15 +3666,21 @@ function encodable(font, text) {
 
 // flatten: draw all markup into the page content instead of writing editable
 // annotations (for a copy that looks the same everywhere and can't be changed).
-async function buildOutput({ flatten = false } = {}) {
+// pdfa: embed every font Agility writes and add PDF/A-2b metadata
+// (state.pdfaProblems then lists what still doesn't conform).
+async function buildOutput({ flatten = false, pdfa = false } = {}) {
   if (isEditable(document.activeElement)) document.activeElement.blur();
   const doc = await PDFDocument.load(state.bytes, { updateMetadata: false });
   doc.registerFontkit(window.fontkit);
-  const font = await doc.embedFont(StandardFonts.Helvetica);
+  if (state.docProps) applyProperties(doc, state.docProps);
+  const font = pdfa
+    ? await doc.embedFont(await fontBytes(embeddedChoice({ font: 'sans' })), { subset: true })
+    : await doc.embedFont(StandardFonts.Helvetica);
   const fonts = new Map([['Helvetica', font]]);
   // The same font choice the preview uses (document font, DejaVu or standard).
   const textFont = async (a) => {
-    const choice = fontChoice(a);
+    let choice = fontChoice(a);
+    if (pdfa && choice.kind === 'standard') choice = embeddedChoice(a);
     const key = choice.kind === 'standard' ? standardFontName(a) : choice.id || choice.name;
     if (!fonts.has(key)) {
       fonts.set(key, choice.kind === 'standard' ? await doc.embedFont(key) : await doc.embedFont(await fontBytes(choice), { subset: true }));
@@ -3753,6 +3836,7 @@ async function buildOutput({ flatten = false } = {}) {
       }, annotationList);
     }
   }
+  if (pdfa) state.pdfaProblems = toPdfA(doc, state.docProps || {});
   return doc.save();
 }
 
@@ -3834,6 +3918,9 @@ const actions = {
   'toggle-comments': () => toggleComments(),
   'tool-note': () => setTool('note'),
   'tool-redact': () => setTool('redact'),
+  'doc-properties': () => editProperties(),
+  accessibility: () => accessibilityCheck(),
+  'save-pdfa': () => saveAsPdfA(),
   'sign-certificate': () => signWithCertificate(),
   compare: () => compareWith(),
   'close-compare': () => closeCompare(),
