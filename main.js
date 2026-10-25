@@ -12,6 +12,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const { setupUpdates, checkForUpdatesNow } = require('./updater');
 const { officeToPdf, OFFICE_EXTENSIONS } = require('./office');
+const { CertificateStore, signPdf, verifySignatures } = require('./sign');
 
 const APP_NAME = 'Agility';
 const ROOT = __dirname;
@@ -501,6 +502,7 @@ function buildMenu() {
         { type: 'separator' },
         { label: 'Add Comment', click: send('tool-note') },
         { label: 'Sign…', click: send('tool-signature') },
+        { label: 'Sign with Certificate…', click: send('sign-certificate') },
         { label: 'Insert Date', click: send('insert-date') },
         { label: 'Add Form Field', click: send('tool-field') },
         { label: 'Detect Form Fields…', click: send('detect-fields') },
@@ -671,6 +673,33 @@ ipcMain.handle('office:open', async (e, paths) => {
   if (files?.length) await openOfficeFiles(files, owner);
   return files?.length || 0;
 });
+
+// ---- Digital signatures ----------------------------------------------------------------
+
+let certStore = null;
+const certs = () => (certStore ||= new CertificateStore(userFile('Certificates')));
+
+ipcMain.handle('certs:list', () => certs().list());
+ipcMain.handle('certs:create', (_e, subject, password) => certs().create(subject, password));
+ipcMain.handle('certs:remove', (_e, id) => certs().remove(id));
+ipcMain.handle('certs:import', async (e, password) => {
+  const { filePaths } = await dialogs.open(ownerWindow(e), {
+    properties: ['openFile'],
+    filters: [{ name: 'Certificates', extensions: ['p12', 'pfx'] }],
+  });
+  return filePaths?.[0] ? certs().import(filePaths[0], password) : null;
+});
+ipcMain.handle('sign:pdf', async (e, bytes, opts, suggestedName) => {
+  const signed = await signPdf(certs(), bytes, opts);
+  const { canceled, filePath } = await dialogs.save(ownerWindow(e), {
+    defaultPath: suggestedName, filters: [{ name: 'PDF Documents', extensions: ['pdf'] }],
+  });
+  if (canceled || !filePath) return null;
+  await fs.writeFile(filePath, signed);
+  writablePaths.add(filePath);
+  return { path: filePath, name: path.basename(filePath) };
+});
+ipcMain.handle('sign:verify', async (_e, bytes) => verifySignatures(bytes, (await certs().list()).map((c) => c.fingerprint)));
 
 ipcMain.handle('app:info', () => ({
   userName: os.userInfo().username,

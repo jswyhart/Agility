@@ -27,6 +27,7 @@ Electron, [pdf.js](https://mozilla.github.io/pdf.js/) (rendering and text),
 - Fill form fields; add new text, checkbox and dropdown fields.
 - Signatures, drawn or typed in one of four script fonts, can be remembered on this computer.
 - Date stamps and check/cross/dot marks.
+- **Certificate signatures** (*Sign with Certificate…*): sign with a certificate from your organization or a certificate authority (.p12/.pfx), or create a self-signed one. You can add a reason, a location and a visible signature box. Opening a signed PDF shows whether each signature is intact, whether the file changed after signing, and whether the signer's identity is verified by a trusted authority. Editing a signed document warns that saving will invalidate the signature.
 - **Form authoring:** *Detect form fields* finds fill-in lines, boxes, checkbox squares and underscore blanks on flat forms, and names each field after its label. *Edit form fields* lets you click a field to change its name, tooltip, required/read-only, value, multi-line, max length, font size, alignment or choices, or delete it. *Tab order* orders fields by rows, by columns, or by document structure.
 
 **Redaction**
@@ -127,4 +128,5 @@ To build locally: `npm run dist:mac` on a Mac. Linux AppImages (`npx electron-bu
 - **Some text can't be removed.** Text inside embedded form objects, or written top-to-bottom, can't be removed in place. Edit Text covers and retypes it, and redaction rasterizes that page.
 - **Scanned edits paint over the scan.** Editing scanned text covers the old pixels and retypes the line.
 - **Certificate-encrypted PDFs are view-only.** Only password (Standard) security can be unlocked for editing.
+- **Signatures are not long-term validated.** They carry no timestamp authority or revocation data. A certificate is trusted when it chains to the root certificates bundled with Node.js.
 - **OCR is English only.** It uses the bundled English model; other languages can be added with more `@tesseract.js-data/*` packages.

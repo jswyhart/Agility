@@ -62,7 +62,7 @@ const italicButton = $('#prop-italic');
 const zoomSelect = $('#zoom');
 
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
-const DRAW_TOOLS = new Set(['pen', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'whiteout', 'redact', 'field', 'crop', 'link']);
+const DRAW_TOOLS = new Set(['pen', 'highlight', 'rect', 'ellipse', 'line', 'arrow', 'whiteout', 'redact', 'field', 'crop', 'link', 'certsign']);
 // Tools that mark up the document's own text by selecting it.
 const MARKUP_TOOLS = { highlight: 'highlight', underline: 'underline', strike: 'strike' };
 // Markup that lies flat on the text: it never blocks text selection, and is
@@ -278,6 +278,10 @@ function updateUI() {
 }
 
 function markDirty() {
+  if (state.signatures?.length && !state.signatureWarned) {
+    state.signatureWarned = true;
+    toast('This document is signed. Saving your changes will invalidate the signature.', { ms: 6000 });
+  }
   state.dirty = true;
   state.version = (state.version || 0) + 1;
   updateUI();
@@ -423,6 +427,13 @@ async function openDocument({ data, path = null, name = 'Untitled.pdf' }) {
   state.outline = await readOutline(pdf, pageIds);
   state.outlineEdited = false;
   renderBookmarks();
+  state.signatures = null;
+  state.signatureWarned = false;
+  renderSignatureBanner();
+  if (containsBytes(original, '/ByteRange')) {
+    state.signatures = await api.verifySignatures(original);
+    renderSignatureBanner();
+  }
   updateUI();
   renderComments();
 }
@@ -1132,6 +1143,7 @@ function annotElement(a) {
     }
     case 'field':
     case 'crop':
+    case 'certsign':
       break; // previews while drawing a new form field or crop box
     case 'link':
       el.title = a.url ? `Link to ${a.url} (⌘/Ctrl-click to open)` : a.pageId ? `Link to page ${state.pageIds.indexOf(a.pageId) + 1} (⌘/Ctrl-click to follow)` : 'Link';
@@ -1595,8 +1607,9 @@ function startDraw(e, i, tool) {
       el?.remove();
       return;
     }
-    if (tool === 'field' || tool === 'crop' || tool === 'link') {
+    if (tool === 'field' || tool === 'crop' || tool === 'link' || tool === 'certsign') {
       el?.remove();
+      if (tool === 'certsign') return finishCertificateSignature(i, a);
       return tool === 'field' ? createFormField(i, a) : tool === 'crop' ? cropTo(i, a) : createLink(i, a);
     }
     pushUndo();
@@ -2742,6 +2755,7 @@ function startFill(kind) {
   fillMenu.hidden = true;
   if (!canEdit()) return;
   if (kind === 'signature') return setTool('signature');
+  if (kind === 'certificate') return signWithCertificate();
   if (kind === 'form-edit') return toggleFormEdit();
   if (kind === 'detect-fields') return detectFormFields();
   if (kind === 'tab-order') return chooseTabOrder();
@@ -3288,6 +3302,152 @@ function drawCompareMarks(focus = -1) {
   });
 }
 
+// ---- Certificate signatures ------------------------------------------------------------
+
+function containsBytes(bytes, text) {
+  const needle = new TextEncoder().encode(text);
+  outer: for (let i = bytes.indexOf(needle[0]); i >= 0 && i <= bytes.length - needle.length; i = bytes.indexOf(needle[0], i + 1)) {
+    for (let k = 1; k < needle.length; k++) if (bytes[i + k] !== needle[k]) continue outer;
+    return true;
+  }
+  return false;
+}
+
+function renderSignatureBanner() {
+  const el = $('#sig-banner');
+  const sigs = state.signatures || [];
+  el.hidden = !sigs.length;
+  if (!sigs.length) return;
+  const when = (s) => (s.signedAt ? ` on ${new Date(s.signedAt).toLocaleString()}` : '');
+  const lines = sigs.map((s) => {
+    if (s.error || !s.intact) return { level: 'bad', text: `The signature${s.signer ? ` by ${s.signer}` : ''} is not valid: the signed content was altered or the signature is damaged.` };
+    if (!s.coversWholeFile) return { level: 'warn', text: `Signed by ${s.signer}${when(s)}, but the document was changed after it was signed.` };
+    const who = s.trusted ? "the signer's identity is verified by a trusted authority"
+      : s.own ? 'signed with your own certificate' : `the certificate (issued by ${s.issuer}) isn't from a trusted authority, so the identity isn't verified`;
+    return { level: s.trusted || s.own ? 'ok' : 'warn', text: `Signed by ${s.signer}${when(s)}. The document hasn't changed since; ${who}.${s.reason ? ` Reason: ${s.reason}.` : ''}` };
+  });
+  const worst = lines.some((l) => l.level === 'bad') ? 'bad' : lines.some((l) => l.level === 'warn') ? 'warn' : 'ok';
+  el.className = `sig-banner ${worst}`;
+  el.replaceChildren(...lines.map((l) => Object.assign(div(`sig-line ${l.level}`), { textContent: l.text })));
+}
+
+let pendingSignature = null;
+
+async function chooseCertificate() {
+  let list = await api.certificates();
+  return modal((m, close) => {
+    m.innerHTML = `<h2>Sign with certificate</h2>
+      <p>A digital signature proves who signed and shows if the document changes afterwards.</p>
+      <div class="form">
+        <label class="field-row">Certificate <select class="c-id"></select></label>
+        <div class="field-row"><span></span><button class="secondary c-new">Create…</button><button class="secondary c-import">Import .p12/.pfx…</button></div>
+        <label class="field-row">Password <input type="password" class="c-pw" autocomplete="current-password" /></label>
+        <label class="field-row">Reason <input type="text" class="c-reason" placeholder="I approve this document" /></label>
+        <label class="field-row">Location <input type="text" class="c-loc" /></label>
+        <label class="opt"><input type="checkbox" class="c-visible" checked /> Show a signature box on the page</label>
+      </div><div class="actions"></div>`;
+    const q = (c) => m.querySelector(c);
+    const fill = (selectId) => {
+      q('.c-id').replaceChildren(...list.map((c) => new Option(`${c.name}${c.org ? ` (${c.org})` : ''}${c.selfSigned ? ' · self-signed' : ` · ${c.issuer}`}`, c.id)));
+      if (selectId) q('.c-id').value = selectId;
+      if (!list.length) q('.c-id').append(new Option('No certificates yet: create or import one', ''));
+    };
+    fill();
+    q('.c-new').addEventListener('click', async () => {
+      const created = await createCertificateDialog(m);
+      if (created) {
+        list = await api.certificates();
+        fill(created.id);
+        q('.c-pw').value = created.password;
+      }
+    });
+    q('.c-import').addEventListener('click', async () => {
+      const pw = q('.c-pw').value;
+      if (!pw) return toast("Enter the certificate's password first", { error: true });
+      try {
+        const imported = await api.importCertificate(pw);
+        if (imported) {
+          list = await api.certificates();
+          fill(imported.id);
+        }
+      } catch (err) {
+        toast(/MAC|password/i.test(err.message) ? 'Wrong password for that certificate.' : err.message, { error: true });
+      }
+    });
+    m.querySelector('.actions').append(button('Cancel', 'secondary', () => close(null)), button('Sign…', 'primary', () => {
+      if (!q('.c-id').value) return toast('Create or import a certificate first', { error: true });
+      if (!q('.c-pw').value) return toast('Enter the certificate password', { error: true });
+      close({ certId: q('.c-id').value, password: q('.c-pw').value, reason: q('.c-reason').value.trim(), location: q('.c-loc').value.trim(), visible: q('.c-visible').checked });
+    }));
+  });
+}
+
+// A small inline form inside the certificate dialog (a second modal would replace it).
+function createCertificateDialog(host) {
+  return new Promise((resolve) => {
+    const form = div('form cert-new');
+    form.innerHTML = `<h3>New self-signed certificate</h3>
+      <label class="field-row">Name <input type="text" class="n-name" /></label>
+      <label class="field-row">Email <input type="text" class="n-email" /></label>
+      <label class="field-row">Organization <input type="text" class="n-org" /></label>
+      <label class="field-row">Password <input type="password" class="n-pw" autocomplete="new-password" /></label>
+      <div class="actions"></div>`;
+    form.querySelector('.n-name').value = state.userName || '';
+    const done = (v) => {
+      form.remove();
+      resolve(v);
+    };
+    form.querySelector('.actions').append(button('Cancel', 'secondary', () => done(null)), button('Create', 'primary', async () => {
+      const name = form.querySelector('.n-name').value.trim();
+      const password = form.querySelector('.n-pw').value;
+      if (!name) return toast('Enter a name', { error: true });
+      if (password.length < 4) return toast('Use a password of at least 4 characters', { error: true });
+      const info = await api.createCertificate({ name, email: form.querySelector('.n-email').value.trim(), org: form.querySelector('.n-org').value.trim() }, password);
+      done({ ...info, password });
+    }));
+    host.querySelector('.actions').before(form);
+  });
+}
+
+async function signWithCertificate() {
+  if (!state.pdf) return;
+  if (state.protection) return toast('Remove the password before signing (Page tools ▸ Remove password), then protect the signed copy.', { error: true, ms: 6000 });
+  const opts = await chooseCertificate();
+  if (!opts) return;
+  if (!opts.visible) return completeSignature(opts, null);
+  pendingSignature = opts;
+  setTool('certsign');
+  toast('Drag where the signature box goes', { ms: 3000 });
+}
+
+function finishCertificateSignature(i, box) {
+  const opts = pendingSignature;
+  pendingSignature = null;
+  setTool('select');
+  if (!opts) return;
+  const vp = state.pages[i].getViewport({ scale: 1 });
+  const [x1, y1] = vp.convertToPdfPoint(box.x, box.y);
+  const [x2, y2] = vp.convertToPdfPoint(box.x + box.w, box.y + box.h);
+  completeSignature(opts, { page: i, rect: [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)] });
+}
+
+function completeSignature(opts, visible) {
+  return enqueue(async () => {
+    const out = await buildOutput();
+    const base = (state.fileName || 'Document').replace(/\.pdf$/i, '');
+    let res;
+    try {
+      res = await api.signPdf(out, { ...opts, visible }, `${base} (signed).pdf`);
+    } catch (err) {
+      throw new Error(/MAC|password/i.test(err.message) ? 'Wrong certificate password.' : err.message);
+    }
+    if (!res) return;
+    state.dirty = false;
+    await openPath(res.path);
+    toast(`Signed and saved ${res.name}`);
+  });
+}
+
 function setFormValue(key, value, source) {
   state.formValues[key] = value;
   // Keep every widget of the same field (e.g. a name repeated on each page) in sync.
@@ -3674,6 +3834,7 @@ const actions = {
   'toggle-comments': () => toggleComments(),
   'tool-note': () => setTool('note'),
   'tool-redact': () => setTool('redact'),
+  'sign-certificate': () => signWithCertificate(),
   compare: () => compareWith(),
   'close-compare': () => closeCompare(),
   preferences: () => openPreferences(),

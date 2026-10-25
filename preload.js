@@ -46,6 +46,14 @@ contextBridge.exposeInMainWorld('api', {
   setPrefs: (next) => ipcRenderer.invoke('prefs:set', next),
   onPrefsChanged: on('prefs:changed'),
 
+  // Digital signatures
+  certificates: () => ipcRenderer.invoke('certs:list'),
+  createCertificate: (subject, password) => ipcRenderer.invoke('certs:create', subject, password),
+  importCertificate: (password) => ipcRenderer.invoke('certs:import', password),
+  removeCertificate: (id) => ipcRenderer.invoke('certs:remove', id),
+  signPdf: (bytes, opts, name) => ipcRenderer.invoke('sign:pdf', bytes, opts, name),
+  verifySignatures: (bytes) => ipcRenderer.invoke('sign:verify', bytes),
+
   // Installed fonts
   findFont: (names) => ipcRenderer.invoke('fonts:find', names),
 
