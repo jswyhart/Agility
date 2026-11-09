@@ -87,3 +87,77 @@ jobs:
             dist/*.deb
             dist/latest*.yml
           if-no-files-found: ignore
+
+  msix:
+    needs: test
+    runs-on: windows-latest
+    env:
+      WIN_CERT_PFX: ${{ secrets.WIN_CERT_PFX }}
+      WIN_CERT_PASSWORD: ${{ secrets.WIN_CERT_PASSWORD }}
+      # The certificate's exact subject, e.g. "CN=Contoso, O=Contoso, C=US".
+      MSIX_PUBLISHER: ${{ secrets.MSIX_PUBLISHER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # MSIX packages must be signed by a certificate whose subject matches the
+      # manifest's Publisher. Without real secrets, make a throwaway test one.
+      - name: Prepare the signing certificate
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force msix-signing | Out-Null
+          $pfx = Join-Path $PWD 'msix-signing\signing.pfx'
+          if ($env:WIN_CERT_PFX -and $env:MSIX_PUBLISHER) {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WIN_CERT_PFX))
+            $password = $env:WIN_CERT_PASSWORD
+            $publisher = $env:MSIX_PUBLISHER
+          } else {
+            $publisher = (Get-Content package.json -Raw | ConvertFrom-Json).build.appx.publisher
+            $cert = New-SelfSignedCertificate -Type Custom -Subject $publisher -KeyUsage DigitalSignature `
+              -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -CertStoreLocation 'Cert:\CurrentUser\My' `
+              -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3', '2.5.29.19={text}')
+            $password = [guid]::NewGuid().ToString()
+            Write-Output "::add-mask::$password"
+            Export-PfxCertificate -Cert $cert -FilePath $pfx -Password (ConvertTo-SecureString $password -AsPlainText -Force) | Out-Null
+            New-Item -ItemType Directory -Force dist | Out-Null
+            Export-Certificate -Cert $cert -FilePath 'dist\Agility-test-certificate.cer' | Out-Null
+          }
+          $env:MSIX_PUBLISHER = $publisher
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));p.build.appx.publisher=process.env.MSIX_PUBLISHER;fs.writeFileSync('package.json',JSON.stringify(p,null,2))"
+          "CSC_LINK=$pfx" >> $env:GITHUB_ENV
+          "CSC_KEY_PASSWORD=$password" >> $env:GITHUB_ENV
+      - name: Build MSIX packages
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Only packages signed with a real certificate go on a GitHub Release.
+          $publish = if ($env:GITHUB_REF -like 'refs/tags/v*' -and $env:WIN_CERT_PFX) { 'always' } else { 'never' }
+          npx electron-builder --win appx --x64 --arm64 --publish $publish
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Install and launch the x64 package
+        shell: pwsh
+        run: |
+          if (Test-Path 'dist\Agility-test-certificate.cer') {
+            Import-Certificate -FilePath 'dist\Agility-test-certificate.cer' -CertStoreLocation 'Cert:\LocalMachine\TrustedPeople' | Out-Null
+          }
+          $appx = (Get-Content package.json -Raw | ConvertFrom-Json).build.appx
+          $msix = Get-ChildItem 'dist\*x64*.msix' | Select-Object -First 1
+          Add-AppxPackage -Path $msix.FullName
+          $pkg = Get-AppxPackage -Name $appx.identityName
+          if (-not $pkg) { throw 'The package did not install.' }
+          Start-Process "shell:AppsFolder\$($pkg.PackageFamilyName)!$($appx.applicationId)"
+          Start-Sleep -Seconds 20
+          $running = Get-Process -Name Agility -ErrorAction SilentlyContinue
+          if (-not $running) { throw 'The installed app is not running.' }
+          $running | Stop-Process -Force
+          Remove-AppxPackage -Package $pkg.PackageFullName
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agility-msix
+          path: |
+            dist/*.msix
+            dist/Agility-test-certificate.cer

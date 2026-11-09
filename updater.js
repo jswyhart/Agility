@@ -7,7 +7,8 @@ const { app, dialog } = require('electron');
 let updater = null;
 
 function setupUpdates(parentWindow) {
-  if (!app.isPackaged || process.env.AGILITY_TEST_DIR || process.env.AGILITY_NO_UPDATE) return;
+  // MSIX installs are read-only and updated by Windows (the Store or the installer).
+  if (!app.isPackaged || process.windowsStore || process.env.AGILITY_TEST_DIR || process.env.AGILITY_NO_UPDATE) return;
   try {
     ({ autoUpdater: updater } = require('electron-updater'));
   } catch {
@@ -36,7 +37,8 @@ async function checkForUpdatesNow(win) {
     dialog.showMessageBox(win, {
       type: 'info',
       message: `Agility ${app.getVersion()}`,
-      detail: app.isPackaged ? 'Automatic updates are not set up for this build.' : 'Updates are checked in installed releases only.',
+      detail: process.windowsStore ? 'Windows keeps this copy up to date.'
+        : app.isPackaged ? 'Automatic updates are not set up for this build.' : 'Updates are checked in installed releases only.',
     });
     return;
   }
