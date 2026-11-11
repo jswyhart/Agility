@@ -114,7 +114,7 @@ Build with `npm run dist:msix` on Windows, or use the `msix` job in CI, which bu
 
 - **Testing a CI build:** without certificate secrets, CI signs with a throwaway certificate and uploads it as `Agility-test-certificate.cer`. Import it into *Local Machine ▸ Trusted People* as an administrator, then double-click the `.msix`.
 - **Your own certificate:** add the `WIN_CERT_PFX` and `WIN_CERT_PASSWORD` secrets, plus `MSIX_PUBLISHER` with the certificate's exact subject.
-- **Microsoft Store:** reserve the app name in Partner Center, then copy its *Package/Identity/Name*, *Publisher* and *PublisherDisplayName* into `build.appx` (`identityName`, `publisher`, `publisherDisplayName`).
+- **Microsoft Store:** `build.appx` holds the Partner Center identity for Agility (Store ID 9N5ZDSBDQHQN, package family `swyhart.Agility_hvf2zc3emf56r`). Upload the `.msix` in Partner Center; the Store re-signs it, so no certificate of your own is needed for Store releases.
 
 ## Releasing, signing and updates
 

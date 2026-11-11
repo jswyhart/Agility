@@ -123,11 +123,11 @@
       }
     ],
     "appx": {
-      "identityName": "Agility.PDFEditor",
+      "identityName": "swyhart.Agility",
       "applicationId": "Agility",
       "displayName": "Agility",
-      "publisher": "CN=Agility Development",
-      "publisherDisplayName": "Agility",
+      "publisher": "CN=B5271835-9174-4B0D-BF2E-86DAF19CB359",
+      "publisherDisplayName": "swyhart",
       "backgroundColor": "transparent",
       "showNameOnTiles": true,
       "languages": [
