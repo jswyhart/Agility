@@ -1,6 +1,7 @@
 // Document properties, an accessibility check, and PDF/A-2b output.
 
 import { srgbProfile } from './icc.js';
+import { tagDocument } from './tagging.js';
 
 const { PDFName, PDFDict, PDFArray, PDFString, PDFHexString, PDFBool, PDFNumber } = window.PDFLib;
 
@@ -64,7 +65,7 @@ export async function checkAccessibility(doc, pdf, { protection } = {}) {
   const markInfo = doc.catalog.lookupMaybe(PDFName.of('MarkInfo'), PDFDict);
   const tagged = !!markInfo?.get(PDFName.of('Marked'))?.asBoolean?.() && doc.catalog.has(PDFName.of('StructTreeRoot'));
   add('tagged', 'Tagged structure', tagged, tagged ? 'Headings, paragraphs and reading order are tagged.'
-    : "Untagged: screen readers can't tell headings, lists and reading order apart. Re-export from the source document with tags (accessible PDF) to fix.", { warn: true });
+    : "Untagged: screen readers can't tell headings, paragraphs and reading order apart. Fix adds tags worked out from the layout (headings by text size, paragraphs, images). If you have the source document, exporting it as a tagged PDF is more exact.", { warn: true, fix: 'tags' });
 
   const noText = [];
   let figures = 0;
@@ -86,7 +87,7 @@ export async function checkAccessibility(doc, pdf, { protection } = {}) {
     }
   }
   add('text', 'Text on every page', !noText.length, noText.length ? `Page${noText.length > 1 ? 's' : ''} ${noText.slice(0, 10).join(', ')}${noText.length > 10 ? '…' : ''} ${noText.length > 1 ? 'are' : 'is'} only images. Recognize the text (OCR).` : 'Every page has real text.', { fix: 'ocr' });
-  if (tagged) add('alt', 'Alternate text for figures', !figuresWithoutAlt, figures ? `${figures - figuresWithoutAlt} of ${figures} figures have alternate text.` : 'No tagged figures.', { warn: true });
+  if (tagged) add('alt', 'Alternate text for figures', !figuresWithoutAlt, figures ? `${figures - figuresWithoutAlt} of ${figures} figures have alternate text.` : 'No tagged figures.', { warn: true, fix: 'alt' });
 
   const fields = doc.getForm().getFields();
   const noTip = fields.filter((f) => !f.acroField.dict.has(PDFName.of('TU')));
@@ -113,6 +114,7 @@ export async function checkAccessibility(doc, pdf, { protection } = {}) {
 
 /** Fixes that work directly on the document. */
 export function applyFix(doc, id) {
+  if (id === 'tags') tagDocument(doc);
   if (id === 'display-title') {
     const prefs = doc.catalog.lookupMaybe(PDFName.of('ViewerPreferences'), PDFDict) || doc.context.obj({});
     prefs.set(PDFName.of('DisplayDocTitle'), PDFBool.True);

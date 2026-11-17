@@ -537,3 +537,6 @@ export function pageShapes(doc, pageIndex) {
   const fonts = page.node.Resources()?.lookupMaybe(PDFName.of('Font'), PDFDict);
   return interpret(ops, fonts).shapes;
 }
+
+// For tagging.js, which marks up the same content streams.
+export { parseOps, interpret, readPageContent };

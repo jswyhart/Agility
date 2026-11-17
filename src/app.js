@@ -12,6 +12,7 @@ import { removeTextLine, redactText, collectGarbage } from './textedit.js';
 import { isAnnotationType, writeAnnotations, takeAnnotations } from './pdfannots.js';
 import { fontChoice, fontBytes, fontReady, captureFont, onFontLoaded, embeddedChoice } from './fonts.js';
 import { readProperties, applyProperties, checkAccessibility, applyFix, toPdfA } from './accessibility.js';
+import { listFigures, setFigureAlts } from './tagging.js';
 import { install as installPageTools, cropTo } from './pagetools.js';
 import { isEncrypted, decryptPdf } from './decrypt.js';
 import { encryptPdf } from './crypto.js';
@@ -3620,8 +3621,33 @@ async function accessibilityCheck() {
     state.docProps = { ...(state.docProps || {}), displayTitle: true };
     markDirty();
   } else if (fix === 'ocr') return runOcr();
+  else if (fix === 'alt') await describeFigures();
   else await mutateDocument((d) => applyFix(d, fix));
   return accessibilityCheck(); // show the updated results
+}
+
+// Alternate text for the tagged figures: what a screen reader says in place of each image.
+async function describeFigures() {
+  const figures = listFigures(await PDFDocument.load(await buildOutput(), { updateMetadata: false }));
+  if (!figures.length) return;
+  const alts = await modal((m, close) => {
+    m.innerHTML = `<h2>Describe the figures</h2>
+      <p>Say what each image shows, as you would to someone who can't see it. Leave purely decorative images empty.</p>
+      <div class="form alt-list"></div><div class="actions"></div>`;
+    const list = m.querySelector('.alt-list');
+    figures.forEach((f, k) => {
+      const row = document.createElement('label');
+      row.className = 'field-row';
+      row.append(`Figure ${k + 1}${f.page ? ` (page ${f.page})` : ''} `);
+      const input = Object.assign(document.createElement('input'), { type: 'text', className: 'alt-text', value: f.alt });
+      row.append(input);
+      if (f.page) input.addEventListener('focus', () => state.views[f.page - 1]?.el.scrollIntoView({ block: 'nearest' }));
+      list.append(row);
+    });
+    m.querySelector('.actions').append(button('Cancel', 'secondary', () => close(null)),
+      button('Save', 'primary', () => close([...m.querySelectorAll('.alt-text')].map((i) => i.value))));
+  });
+  if (alts) await mutateDocument((d) => setFigureAlts(d, alts));
 }
 
 function saveAsPdfA() {

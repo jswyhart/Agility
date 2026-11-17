@@ -8,7 +8,7 @@ Electron, [pdf.js](https://mozilla.github.io/pdf.js/) (rendering and text),
 ## Features
 
 **Reading**
-- Tabs: each document opens in its own tab; drag a PDF onto the window, use File ▸ Open, or Open Recent (also on the welcome screen).
+- Tabs: each document opens in its own tab; drag a PDF onto the window, use File ▸ Open, or Open Recent (also on the welcome screen). Drag tabs to reorder them or out of the strip for a window of their own; right-click a tab to close the others, show the file in its folder or copy its path. A closed tab can be reopened, closing the last document leaves a start page, and the documents open when you quit come back at the next launch. When tabs don't fit they scroll, with a ▾ menu listing them all.
 - Continuous scroll, page thumbnails, zoom (fit width/page, presets, ⌘/Ctrl + scroll or pinch), find in document.
 - Select and copy the document's text, including text recognized by OCR.
 
@@ -27,7 +27,7 @@ Electron, [pdf.js](https://mozilla.github.io/pdf.js/) (rendering and text),
 - Fill form fields; add new text, checkbox and dropdown fields.
 - Signatures, drawn or typed in one of four script fonts, can be remembered on this computer.
 - Date stamps and check/cross/dot marks.
-- **Certificate signatures** (*Sign with Certificate…*): sign with a certificate from your organization or a certificate authority (.p12/.pfx), or create a self-signed one. You can add a reason, a location and a visible signature box. Opening a signed PDF shows whether each signature is intact, whether the file changed after signing, and whether the signer's identity is verified by a trusted authority. Editing a signed document warns that saving will invalidate the signature.
+- **Certificate signatures** (*Sign with Certificate…*): sign with a certificate from your organization or a certificate authority (.p12/.pfx), or create a self-signed one. You can add a reason, a location and a visible signature box. Opening a signed PDF shows whether each signature is intact, whether the file changed after signing, and whether the signer's identity is verified by a trusted authority. Editing a signed document warns that saving will invalidate the signature. *Add a trusted timestamp* asks a timestamp authority (RFC 3161; DigiCert's public server by default, or your own) to confirm when you signed, so the signature can still be checked after your certificate expires; only a fingerprint of the signature is sent.
 - **Form authoring:** *Detect form fields* finds fill-in lines, boxes, checkbox squares and underscore blanks on flat forms, and names each field after its label. *Edit form fields* lets you click a field to change its name, tooltip, required/read-only, value, multi-line, max length, font size, alignment or choices, or delete it. *Tab order* orders fields by rows, by columns, or by document structure.
 
 **Redaction**
@@ -61,7 +61,7 @@ Electron, [pdf.js](https://mozilla.github.io/pdf.js/) (rendering and text),
 
 **Accessibility and archiving**
 - *Document Properties*: title, author, subject, keywords and language, and showing the title in viewers.
-- *Check Accessibility*: title, language, tagging, real text on every page, figure alternate text (tagged files), form field and link descriptions, security settings and embedded fonts. One-click fixes where possible: properties, OCR, generated field and link descriptions.
+- *Check Accessibility*: title, language, tagging, real text on every page, figure alternate text (tagged files), form field and link descriptions, security settings and embedded fonts. One-click fixes where possible: properties, OCR, generated field and link descriptions, **tags for untagged documents** (headings by text size, paragraphs and images in reading order) and alternate text for figures.
 - *Save as PDF/A*: a PDF/A-2b copy with XMP metadata, an sRGB output intent (a generated standard profile), embedded fonts for text Agility writes, no scripts, and printable annotations. It lists anything it can't fix, such as fonts the original never embedded. Not checked with a formal validator such as veraPDF.
 
 **Safety**
@@ -73,7 +73,8 @@ Electron, [pdf.js](https://mozilla.github.io/pdf.js/) (rendering and text),
 | Key | Tool | | Key | Action |
 |---|---|---|---|---|
 | V | Select / select text | | ⌘/Ctrl O | Open (new tab if needed) |
-| X | Edit PDF text | | ⌘/Ctrl T / W | New tab / close tab |
+| X | Edit PDF text | | ⌘/Ctrl T / W / ⇧T | New tab / close tab / reopen closed tab |
+| | | | Alt 1…9 (⌃1…9 on Mac) / F6 | Go to tab (9 = last) / keyboard focus to the tab bar |
 | T | Text box | | ⌘/Ctrl S / ⇧S | Save / Save As |
 | N | Comment | | ⌘/Ctrl Z / ⇧Z (Ctrl Y) | Undo / Redo |
 | H / U / K | Highlight / Underline / Strike | | ⌘/Ctrl F | Find |
@@ -143,6 +144,6 @@ To build locally: `npm run dist:mac` on a Mac. Linux AppImages (`npx electron-bu
 - **Some text can't be removed.** Text inside embedded form objects, or written top-to-bottom, can't be removed in place. Edit Text covers and retypes it, and redaction rasterizes that page.
 - **Scanned edits paint over the scan.** Editing scanned text covers the old pixels and retypes the line.
 - **Certificate-encrypted PDFs are view-only.** Only password (Standard) security can be unlocked for editing.
-- **Signatures are not long-term validated.** They carry no timestamp authority or revocation data. A certificate is trusted when it chains to the root certificates bundled with Node.js.
-- **Accessibility fixes don't add tags.** Untagged PDFs are reported but not given a structure tree; re-export them from the source with tags.
+- **Signatures carry no revocation data.** A trusted timestamp proves when a document was signed, but Agility doesn't embed or check certificate revocation (OCSP/CRL). A certificate is trusted when it chains to the root certificates bundled with Node.js.
+- **Added tags are worked out from the layout.** Tagging an untagged PDF finds headings, paragraphs and images, in the order the page draws them. It doesn't recognize lists or tables, doesn't tag links or form fields, and can't see text inside embedded form objects. Exporting a tagged PDF from the source document is more exact.
 - **OCR is English only.** It uses the bundled English model; other languages can be added with more `@tesseract.js-data/*` packages.

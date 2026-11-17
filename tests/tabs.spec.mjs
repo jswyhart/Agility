@@ -1,6 +1,6 @@
 // Tab strip: reopening, reordering, moving to a window, keyboard use, overflow, session restore.
 import { test, expect } from '@playwright/test';
-import { launch, fixture, docTab, tabStrip } from './helpers.mjs';
+import { launch, fixture, tabStrip } from './helpers.mjs';
 
 const three = () => launch({ files: [fixture('sample.pdf'), fixture('outline.pdf'), fixture('paragraphs.pdf')] });
 const titles = (strip) => strip.locator('.tab .title').allTextContents();
@@ -71,11 +71,14 @@ test('dragging a tab out of the strip moves it to its own window', async () => {
   await strip.mouse.up();
   await loadedTitles(ctx, ['sample.pdf', 'paragraphs.pdf']);
   await expect.poll(() => ctx.app.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows().length)).toBe(2);
-  // The document went along unchanged.
-  const moved = await docTab(ctx.app, 1);
-  expect(await moved.evaluate(() => window.agility.state.fileName)).toBe('outline.pdf');
-  const strips = ctx.app.context().pages().filter((p) => p.url().includes('tabs.html'));
-  await expect.poll(async () => (await Promise.all(strips.map(titles))).flat().sort()).toEqual(['outline.pdf', 'paragraphs.pdf', 'sample.pdf']);
+  // Every document is still loaded: the tab moved, it wasn't reopened.
+  const docs = ctx.app.context().pages().filter((p) => p.url().includes('index.html'));
+  const names = await Promise.all(docs.map((p) => p.evaluate(() => window.agility.state.pdf && window.agility.state.fileName)));
+  expect(names.sort()).toEqual(['outline.pdf', 'paragraphs.pdf', 'sample.pdf']);
+  // The new window's strip takes a moment to load, so look for the strips on each try.
+  const strips = () => ctx.app.context().pages().filter((p) => p.url().includes('tabs.html'));
+  await expect.poll(async () => (await Promise.all(strips().map(titles))).flat().sort()).toEqual(['outline.pdf', 'paragraphs.pdf', 'sample.pdf']);
+  expect(strips()).toHaveLength(2);
   await ctx.close();
 });
 

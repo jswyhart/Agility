@@ -67,8 +67,10 @@ test('crop hides the outside of the page and keeps markup in place', async () =>
   const pg = await pageBox(page);
   await drag(page, { x: pg.x + 50, y: pg.y + 50 }, { x: pg.x + 450, y: pg.y + 350 });
   await submitModal(page, null, 'Crop');
-  await expect.poll(() => page.evaluate(() => window.agility.state.pages[0].view)).toEqual([50, 442, 450, 742]);
-  expect(await page.evaluate(() => window.agility.state.annotations[window.agility.state.pageIds[0]][0].x)).toBe(50);
+  // To a hundredth of a point: on fractionally scaled displays the mouse lands a hair off whole pixels.
+  const near = (v) => Math.round(v * 100) / 100;
+  await expect.poll(async () => (await page.evaluate(() => window.agility.state.pages[0].view)).map(near)).toEqual([50, 442, 450, 742]);
+  expect(near(await page.evaluate(() => window.agility.state.annotations[window.agility.state.pageIds[0]][0].x))).toBe(50);
 });
 
 test('save with password encrypts with AES and applies permissions', async () => {
