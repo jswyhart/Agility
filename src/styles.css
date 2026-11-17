@@ -131,6 +131,8 @@ select:focus, input:focus { border-color: var(--select); }
 .page .hit.current { background: rgba(255, 128, 0, 0.55); outline: 2px solid rgba(255, 128, 0, 0.9); }
 .page .forms { pointer-events: none; z-index: 3; }
 .page .forms > * { pointer-events: auto; position: absolute; }
+/* With a drawing or markup tool, a press on a form field draws instead of filling it. */
+.viewer:not([data-tool="select"]) .page .forms > * { pointer-events: none; }
 .page .forms input[type="text"], .page .forms textarea, .page .forms select {
   background: rgba(59, 130, 246, 0.12); border: 1px solid rgba(59, 130, 246, 0.5); border-radius: 2px;
   color: #000; padding: 0 3px; outline: none; font-family: Helvetica, Arial, sans-serif; resize: none;
@@ -172,6 +174,7 @@ select:focus, input:focus { border-color: var(--select); }
   background: #fff; border: 1.5px solid var(--select); border-radius: 2px; cursor: nwse-resize; display: none;
 }
 .annot.selected .handle { display: block; }
+.annot .handle.end { right: auto; bottom: auto; margin: -6.5px 0 0 -6.5px; border-radius: 50%; cursor: crosshair; }
 .annot.highlight { mix-blend-mode: multiply; }
 .annot.redact { border: 1.5px solid #e5484d; background: repeating-linear-gradient(-45deg, rgba(229,72,77,0.18) 0 6px, rgba(229,72,77,0.06) 6px 12px); }
 .annot.markup .mark { position: absolute; }

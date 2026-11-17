@@ -50,6 +50,13 @@ const svgEl = (tag, attrs) => {
   return el;
 };
 
+// Tooltips are written with Mac shortcuts; show Windows/Linux ones elsewhere.
+if (window.api.platform !== 'darwin') {
+  for (const el of document.querySelectorAll('[title*="⌘"]')) {
+    el.title = el.title.replace('⇧⌘Z', 'Ctrl+Y').replace(/⇧⌘/g, 'Ctrl+Shift+').replace(/⌘/g, 'Ctrl+');
+  }
+}
+
 const viewerEl = $('#viewer');
 const pagesEl = $('#pages');
 const thumbsEl = $('#thumbs');
@@ -1155,6 +1162,14 @@ function annotElement(a) {
       el.append(shapeSvg(a, b));
   }
   if (BOX_TYPES.has(a.type) || a.type === 'text') el.append(div('handle'));
+  if (a.type === 'line' || a.type === 'arrow') {
+    for (const n of [1, 2]) {
+      const h = div('handle end');
+      h.dataset.end = n;
+      Object.assign(h.style, { left: `${(a[`x${n}`] - b.x) * s}px`, top: `${(a[`y${n}`] - b.y) * s}px` });
+      el.append(h);
+    }
+  }
   if (a.type === 'markup' && a.note) el.title = a.note;
   return el;
 }
@@ -1221,6 +1236,58 @@ function selectedAnnot() {
   return state.selected && findAnnot(state.selected.page, state.selected.id);
 }
 
+// ---- Copy and paste annotations -------------------------------------------------
+// Through the clipboard, so they paste into other tabs too. Text selections and
+// fields being typed in keep the normal copy and paste.
+const ANNOT_MIME = 'application/x-agility-annotation';
+let lastPaste = { data: null, count: 0 };
+
+function copyingAnnotation() {
+  const a = selectedAnnot();
+  return a && a.type !== 'markup' && a.type !== 'ocrtext' && !isEditable(document.activeElement) && getSelection().isCollapsed ? a : null;
+}
+
+document.addEventListener('copy', (e) => {
+  const a = copyingAnnotation();
+  if (!a) return;
+  e.preventDefault();
+  e.clipboardData.setData(ANNOT_MIME, JSON.stringify(a));
+  e.clipboardData.setData('text/plain', a.text || a.url || '');
+});
+
+document.addEventListener('cut', (e) => {
+  const a = copyingAnnotation();
+  if (!a || !canEdit()) return;
+  e.preventDefault();
+  e.clipboardData.setData(ANNOT_MIME, JSON.stringify(a));
+  e.clipboardData.setData('text/plain', a.text || a.url || '');
+  deleteSelected();
+});
+
+document.addEventListener('paste', (e) => {
+  if (isEditable(e.target) || !state.pdf || !canEdit()) return;
+  const data = e.clipboardData.getData(ANNOT_MIME);
+  if (!data) return;
+  e.preventDefault();
+  const orig = JSON.parse(data);
+  // Each paste of the same thing lands a little further down and right.
+  lastPaste = lastPaste.data === data ? { data, count: lastPaste.count + 1 } : { data, count: 1 };
+  const page = state.current;
+  const { width: W, height: H } = baseViewport(page);
+  const b = bounds(orig);
+  const step = 12 * lastPaste.count;
+  const dx = clamp(step, -b.x, W - b.x - b.w);
+  const dy = clamp(step, -b.y, H - b.y - b.h);
+  const a = { ...structuredClone(orig), id: uid() };
+  translate(a, orig, dx, dy);
+  if (a.replies) a.replies = a.replies.map((r) => ({ ...r, id: uid() }));
+  pushUndo();
+  annotsOf(page).push(a);
+  renderAnnotations(page);
+  select({ page, id: a.id });
+  markDirty();
+});
+
 function deleteSelected() {
   const a = selectedAnnot();
   if (!a || !canEdit()) return;
@@ -1250,7 +1317,9 @@ function pagePoint(e, i) {
   return { x: (e.clientX - r.left) / state.scale, y: (e.clientY - r.top) / state.scale };
 }
 
-const colorKey = (tool) => (['text', 'highlight', 'underline', 'strike'].includes(tool) ? tool : 'shape');
+// A date stamp is text, so it uses (and remembers) the text color; marks use the shape color.
+const colorKey = (tool) => (['text', 'highlight', 'underline', 'strike'].includes(tool) ? tool
+  : tool === 'stamp' && state.pendingStamp?.type === 'text' ? 'text' : 'shape');
 
 // With a text box selected, Highlight marks that text (or clears it) and keeps
 // the selection, instead of switching to the area-highlight tool.
@@ -1405,7 +1474,8 @@ function onPagePointerDown(e, i) {
       if (!resizing && k >= 0 && stack.length > 1) select({ page: i, id: stack[(k + 1) % stack.length].dataset.id });
     };
     select({ page: i, id: current.dataset.id });
-    if (canEdit()) startDrag(e, i, findAnnot(i, current.dataset.id), resizing ? 'resize' : 'move', cycle);
+    const mode = !resizing ? 'move' : e.target.dataset.end ? `end${e.target.dataset.end}` : 'resize';
+    if (canEdit()) startDrag(e, i, findAnnot(i, current.dataset.id), mode, cycle);
     else cycle();
     return;
   }
@@ -1504,6 +1574,22 @@ function translate(a, orig, dx, dy) {
   } else Object.assign(a, { x: orig.x + dx, y: orig.y + dy });
 }
 
+// Drag one end of a line or arrow; Shift snaps it to 45° steps around the other end.
+function moveEnd(a, orig, n, dx, dy, snap) {
+  const m = 3 - n;
+  let x = orig[`x${n}`] + dx;
+  let y = orig[`y${n}`] + dy;
+  if (snap) {
+    const ox = orig[`x${m}`], oy = orig[`y${m}`];
+    const ang = Math.round(Math.atan2(y - oy, x - ox) / (Math.PI / 4)) * (Math.PI / 4);
+    const len = Math.hypot(x - ox, y - oy);
+    x = ox + len * Math.cos(ang);
+    y = oy + len * Math.sin(ang);
+  }
+  a[`x${n}`] = x;
+  a[`y${n}`] = y;
+}
+
 function resize(a, orig, dx, dy, free) {
   if (a.type === 'text' && a.wrap) {
     a.wrap = Math.max(a.size * 2, orig.wrap + dx); // reflow; size stays
@@ -1546,6 +1632,7 @@ function startDrag(e, i, a, mode, onClick = null) {
     if (!moved && Math.hypot(dx, dy) * state.scale < 3) return;
     moved = true;
     if (mode === 'move') translate(a, orig, dx, dy);
+    else if (mode.startsWith('end')) moveEnd(a, orig, mode === 'end1' ? 1 : 2, dx, dy, ev.shiftKey);
     else resize(a, orig, dx, dy, ev.shiftKey);
     updateAnnotElement(i, a).classList.add('selected');
   }, () => {
@@ -2771,6 +2858,7 @@ function startFill(kind) {
   state.pendingStamp = kind === 'date'
     ? { type: 'text', text: new Date().toLocaleDateString() }
     : { type: 'mark', kind };
+  colorInput.value = state.colors[colorKey('stamp')];
   toast(kind === 'date' ? 'Click where the date goes' : 'Click to place; press Esc when done', { ms: 2500 });
 }
 
@@ -3547,6 +3635,43 @@ async function pageText(i) {
   return state.textCache.get(page);
 }
 
+// A page's text as one lowercase string, so a search can match across the separate
+// runs PDFs often split words and phrases into. Whitespace runs collapse to one
+// space and a line break counts as a space. map[n] is [item index, offset] of
+// character n, or null for an inserted space.
+function searchableText(items) {
+  let text = '';
+  const map = [];
+  const push = (ch, at) => {
+    if (/\s/.test(ch)) {
+      if (!text || text.endsWith(' ')) return;
+      ch = ' ';
+    }
+    text += ch;
+    map.push(at);
+  };
+  items.forEach((item, k) => {
+    const prev = items[k - 1];
+    if (prev && (prev.hasEOL || Math.abs(prev.transform[5] - item.transform[5]) > Math.abs(item.transform[3] || 1) * 0.5)) push(' ', null);
+    const s = item.str.toLowerCase();
+    for (let o = 0; o < s.length; o++) push(s[o], [k, o]);
+  });
+  return { text, map };
+}
+
+// The pieces of each text run a match covers, for highlighting.
+function matchParts(items, map, pos, len) {
+  const parts = [];
+  for (const at of map.slice(pos, pos + len)) {
+    if (!at) continue;
+    const [k, o] = at;
+    const last = parts[parts.length - 1];
+    if (last?.k === k && last.start + last.len === o) last.len++;
+    else parts.push({ k, item: items[k], start: o, len: 1 });
+  }
+  return parts;
+}
+
 async function runFind(query) {
   const token = {};
   state.findToken = token;
@@ -3556,17 +3681,15 @@ async function runFind(query) {
     state.views.forEach((_, i) => drawHits(i));
     return;
   }
-  const q = query.toLowerCase();
+  const q = query.toLowerCase().replace(/\s+/g, ' ').trim();
   const results = [];
   for (let i = 0; i < state.pages.length; i++) {
     const items = await pageText(i);
     if (state.findToken !== token) return;
-    items.forEach((item, k) => {
-      const s = item.str.toLowerCase();
-      for (let pos = s.indexOf(q); pos !== -1; pos = s.indexOf(q, pos + 1)) {
-        results.push({ page: i, item, start: pos, len: q.length, k });
-      }
-    });
+    const { text, map } = searchableText(items);
+    for (let pos = text.indexOf(q); pos !== -1; pos = text.indexOf(q, pos + 1)) {
+      results.push({ page: i, parts: matchParts(items, map, pos, q.length) });
+    }
     for (const line of ocrLines(i)) {
       const s = line.text.toLowerCase();
       for (let pos = s.indexOf(q); pos !== -1; pos = s.indexOf(q, pos + 1)) {
@@ -3620,23 +3743,25 @@ function drawHits(i) {
       });
       return el;
     }
-    const tx = pdfjsLib.Util.transform(vp.transform, r.item.transform);
-    const angle = Math.atan2(tx[1], tx[0]);
-    const fontH = Math.hypot(tx[2], tx[3]);
-    const total = r.item.width * state.scale;
-    const n = r.item.str.length;
-    const el = div(r === current ? 'hit current' : 'hit');
-    Object.assign(el.style, {
-      left: `${tx[4]}px`,
-      top: `${tx[5] - fontH}px`,
-      width: `${(total * r.len) / n}px`,
-      height: `${fontH * 1.15}px`,
-      transformOrigin: `0 ${fontH}px`,
-      transform: `rotate(${angle}rad) translateX(${(total * r.start) / n}px)`,
+    return r.parts.map((part) => {
+      const tx = pdfjsLib.Util.transform(vp.transform, part.item.transform);
+      const angle = Math.atan2(tx[1], tx[0]);
+      const fontH = Math.hypot(tx[2], tx[3]);
+      const total = part.item.width * state.scale;
+      const n = part.item.str.length;
+      const el = div(r === current ? 'hit current' : 'hit');
+      Object.assign(el.style, {
+        left: `${tx[4]}px`,
+        top: `${tx[5] - fontH}px`,
+        width: `${(total * part.len) / n}px`,
+        height: `${fontH * 1.15}px`,
+        transformOrigin: `0 ${fontH}px`,
+        transform: `rotate(${angle}rad) translateX(${(total * part.start) / n}px)`,
+      });
+      return el;
     });
-    return el;
   });
-  v.hits.replaceChildren(...els);
+  v.hits.replaceChildren(...els.flat());
 }
 
 // ---- Saving (bake overlay markup into the PDF) ----------------------------------------
