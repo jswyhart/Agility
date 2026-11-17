@@ -2,6 +2,15 @@
 const strip = document.getElementById('strip');
 document.documentElement.className = `platform-${new URLSearchParams(location.search).get('platform')}`;
 
+// The × closes its tab on release, as in browsers. It's matched by tab id, not by
+// element, because an update can rebuild the strip between press and release.
+let pressedClose = null;
+window.addEventListener('mouseup', (e) => {
+  const id = pressedClose;
+  pressedClose = null;
+  if (e.button === 0 && id != null && e.target.closest?.('.close')?.dataset.id === String(id)) window.tabsApi.close(id);
+});
+
 window.tabsApi.onUpdate((tabs) => {
   strip.replaceChildren(...tabs.map((t) => {
     const el = document.createElement('div');
@@ -11,9 +20,12 @@ window.tabsApi.onUpdate((tabs) => {
     el.append(title);
     if (t.dirty) el.append(Object.assign(document.createElement('span'), { className: 'dot', title: 'Unsaved changes' }));
     const close = Object.assign(document.createElement('button'), { className: 'close', textContent: '×', title: 'Close tab' });
-    close.addEventListener('click', (e) => {
+    close.dataset.id = t.id;
+    // Pressing × mustn't activate the tab: activating rebuilds this strip and moves
+    // focus to the document, so the release would never reach this button.
+    close.addEventListener('mousedown', (e) => {
       e.stopPropagation();
-      window.tabsApi.close(t.id);
+      if (e.button === 0) pressedClose = t.id;
     });
     el.append(close);
     el.addEventListener('mousedown', (e) => {

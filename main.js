@@ -519,7 +519,17 @@ function buildMenu() {
         { label: 'Apply Redactions…', click: send('apply-redactions') },
       ],
     },
-    { role: 'windowMenu' },
+    // Not the stock windowMenu off macOS: its "Close" item also claims Ctrl+W, which
+    // took the shortcut from Close Tab and closed the whole window (every tab).
+    IS_MAC ? { role: 'windowMenu' } : {
+      label: 'Window',
+      submenu: [
+        { role: 'minimize' },
+        { role: 'zoom' },
+        { type: 'separator' },
+        { label: 'Close Window', accelerator: 'Ctrl+Shift+W', click: () => focusedWindow()?.win.close() },
+      ],
+    },
     ...(IS_MAC ? [] : [{
       label: 'Help',
       submenu: [
