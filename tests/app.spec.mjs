@@ -3,6 +3,7 @@ import { test, expect } from '@playwright/test';
 import { launch, fixture, docTab, tabStrip, showPage, pageBox, annotations, submitModal, savedBytes, pageText } from './helpers.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execSync } from 'node:child_process';
 
 test('each file opens in its own tab with separate state', async () => {
   const ctx = await launch({ files: [fixture('sample.pdf'), fixture('scanned.pdf')] });
@@ -24,7 +25,10 @@ test('unsaved changes are restored after a crash', async () => {
     s.version = (s.version || 0) + 1;
   });
   await expect.poll(() => fs.existsSync(path.join(first.profile, 'Recovery')) && fs.readdirSync(path.join(first.profile, 'Recovery')).length, { timeout: 15000 }).toBe(2);
-  first.app.process().kill('SIGKILL');
+  // Kill the whole process tree: on Windows the helper processes otherwise outlive
+  // the main one and keep the profile locked, so the relaunch quits at once.
+  if (process.platform === 'win32') execSync(`taskkill /pid ${first.app.process().pid} /T /F`, { stdio: 'ignore' });
+  else first.app.process().kill('SIGKILL');
   const second = await launch({ profile: first.profile, env: { AGILITY_RESTORE: 'restore' } });
   const tab = await docTab(second.app, 0);
   expect((await annotations(tab)).map((a) => a.type)).toEqual(['rect']);

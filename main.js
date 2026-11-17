@@ -6,9 +6,10 @@
 // WebContentsView per open document. Every tab runs its own copy of the editor,
 // so documents never share state.
 
-const { app, BaseWindow, WebContentsView, ipcMain, dialog, Menu, protocol, shell, nativeTheme } = require('electron');
+const { app, BaseWindow, WebContentsView, ipcMain, dialog, Menu, protocol, shell, nativeTheme, clipboard, screen } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
 const os = require('node:os');
 const { setupUpdates, checkForUpdatesNow } = require('./updater');
 const { officeToPdf, OFFICE_EXTENSIONS } = require('./office');
@@ -110,6 +111,19 @@ async function writeJson(name, value) {
 const windows = new Set();
 let quitting = false;
 let nextTabId = 1;
+// Files of recently closed tabs, most recent last (File ▸ Reopen Closed Tab).
+const closedTabs = [];
+// Files that were open when the last window closed; reopened at the next launch.
+let session = [];
+
+function saveSession() {
+  try {
+    fsSync.mkdirSync(app.getPath('userData'), { recursive: true });
+    fsSync.writeFileSync(userFile('session.json'), JSON.stringify(session));
+  } catch {
+    /* not worth failing a quit over */
+  }
+}
 
 const webPreferences = (preload) => ({
   preload: path.join(ROOT, preload),
@@ -128,13 +142,14 @@ function lockDown(contents) {
 }
 
 class DocWindow {
-  constructor() {
+  constructor({ x, y } = {}) {
     this.tabs = [];
     this.active = null;
     this.closingAll = false;
     this.win = new BaseWindow({
       width: 1440,
       height: 920,
+      ...(x != null ? { x, y } : {}),
       minWidth: 960,
       minHeight: 600,
       title: APP_NAME,
@@ -156,6 +171,11 @@ class DocWindow {
     });
     this.win.on('closed', () => {
       windows.delete(this);
+      // Remember what was open, to reopen next time. Windows closing together
+      // (a quit) add up; a window closed on its own replaces the list.
+      if (!quitting) session = [];
+      session.push(...(this.sessionFiles || []));
+      saveSession();
       if (quitting && !windows.size) app.quit();
     });
     windows.add(this);
@@ -177,7 +197,7 @@ class DocWindow {
       if (restore) view.webContents.send('recovery:restore', restore);
       else if (filePath) view.webContents.send('open-path', filePath);
     });
-    view.webContents.on('render-process-gone', () => this.closeTab(tab, { force: true }));
+    view.webContents.on('render-process-gone', () => tab.owner.closeTab(tab, { force: true }));
     view.webContents.loadURL('app://bundle/src/index.html');
     this.win.contentView.addChildView(view);
     this.tabs.push(tab);
@@ -186,10 +206,11 @@ class DocWindow {
     return tab;
   }
 
-  activate(tab) {
+  // focus: false keeps the keyboard in the tab strip (arrow-key navigation).
+  activate(tab, { focus = true } = {}) {
     this.active = tab;
     for (const t of this.tabs) t.view.setVisible(t === tab);
-    tab.view.webContents.focus();
+    if (focus) tab.view.webContents.focus();
     this.updateStrip();
     this.updateTitle();
   }
@@ -198,6 +219,97 @@ class DocWindow {
     if (this.tabs.length < 2) return;
     const i = this.tabs.indexOf(this.active);
     this.activate(this.tabs[(i + dir + this.tabs.length) % this.tabs.length]);
+  }
+
+  // Jump to the nth tab (0-based); 8 means the last tab, as in browsers.
+  goTo(n) {
+    const tab = n === 8 ? this.tabs[this.tabs.length - 1] : this.tabs[n];
+    if (tab) this.activate(tab);
+  }
+
+  // Put the keyboard in the tab strip, on the active tab.
+  focusStrip() {
+    this.strip.webContents.focus();
+    this.strip.webContents.send('tabs:focus');
+  }
+
+  moveTab(tab, index) {
+    const from = this.tabs.indexOf(tab);
+    const to = Math.max(0, Math.min(this.tabs.length - 1, index));
+    if (from < 0 || from === to) return;
+    this.tabs.splice(from, 1);
+    this.tabs.splice(to, 0, tab);
+    this.updateStrip();
+  }
+
+  // Take a tab out of this window (without closing its document).
+  release(tab) {
+    const i = this.tabs.indexOf(tab);
+    this.tabs.splice(i, 1);
+    this.win.contentView.removeChildView(tab.view);
+    if (this.active === tab) this.activate(this.tabs[Math.min(i, this.tabs.length - 1)]);
+    else this.updateStrip();
+    this.updateTitle();
+  }
+
+  adopt(tab) {
+    tab.owner = this;
+    this.win.contentView.addChildView(tab.view);
+    this.tabs.push(tab);
+    this.layout();
+    this.activate(tab);
+  }
+
+  // Move a tab into a window of its own, placed at a screen point if given.
+  detachTab(tab, point) {
+    if (this.tabs.length < 2 || !this.tabs.includes(tab)) return null;
+    this.release(tab);
+    const dw = new DocWindow(point ? { x: Math.round(point.x - 120), y: Math.round(point.y - 16) } : {});
+    dw.adopt(tab);
+    dw.win.focus();
+    return dw;
+  }
+
+  // Close several tabs, stopping if the user cancels one of the save prompts.
+  closeTabs(tabs) {
+    for (const t of tabs) if (this.closeTab(t) === 'cancel') return;
+  }
+
+  reopenClosed() {
+    while (closedTabs.length) {
+      const file = closedTabs.pop();
+      if (!fsSync.existsSync(file)) continue;
+      openFiles([file], this);
+      break;
+    }
+    buildMenu();
+  }
+
+  tabMenu(tab) {
+    const i = this.tabs.indexOf(tab);
+    const file = tab.doc.filePath;
+    Menu.buildFromTemplate([
+      { label: 'Close Tab', click: () => this.closeTab(tab) },
+      { label: 'Close Other Tabs', enabled: this.tabs.length > 1, click: () => this.closeTabs(this.tabs.filter((t) => t !== tab)) },
+      { label: 'Close Tabs to the Right', enabled: i < this.tabs.length - 1, click: () => this.closeTabs(this.tabs.slice(i + 1)) },
+      { type: 'separator' },
+      { label: 'Move to New Window', enabled: this.tabs.length > 1, click: () => this.detachTab(tab) },
+      { type: 'separator' },
+      { label: IS_MAC ? 'Reveal in Finder' : process.platform === 'win32' ? 'Show in File Explorer' : 'Show in Folder', enabled: !!file, click: () => shell.showItemInFolder(file) },
+      { label: 'Copy Path', enabled: !!file, click: () => clipboard.writeText(file) },
+      { type: 'separator' },
+      { label: 'Reopen Closed Tab', enabled: closedTabs.length > 0, click: () => this.reopenClosed() },
+    ]).popup({ window: this.win });
+  }
+
+  // Every tab in a menu, for when they don't all fit in the strip.
+  listMenu() {
+    Menu.buildFromTemplate(this.tabs.map((t) => ({
+      label: `${t.doc.title || 'New Tab'}${t.doc.dirty ? ' •' : ''}`,
+      type: 'checkbox',
+      checked: t === this.active,
+      click: () => this.activate(t),
+    }))).popup({ window: this.win });
   }
 
   updateStrip() {
@@ -247,6 +359,14 @@ class DocWindow {
       }
     }
     clearRecovery(tab.id);
+    if (tab.doc.filePath && !this.closingAll) {
+      closedTabs.push(tab.doc.filePath);
+      if (closedTabs.length > 25) closedTabs.shift();
+      buildMenu();
+    }
+    // Closing the last document leaves a start page rather than closing the
+    // window; closing that start page (or the window itself) closes the window.
+    if (this.tabs.length === 1 && !this.closingAll && tab.doc.hasDocument) this.addTab();
     const i = this.tabs.indexOf(tab);
     this.tabs.splice(i, 1);
     this.win.contentView.removeChildView(tab.view);
@@ -263,6 +383,7 @@ class DocWindow {
 
   // Close every tab, asking about unsaved ones. Resumes after a save finishes.
   requestClose() {
+    if (!this.closingAll) this.sessionFiles = this.tabs.map((t) => t.doc.filePath).filter(Boolean);
     this.closingAll = true;
     for (const tab of [...this.tabs]) {
       const result = this.closeTab(tab);
@@ -273,6 +394,7 @@ class DocWindow {
 
   cancelClose() {
     this.closingAll = false;
+    this.sessionFiles = null;
     quitting = false;
   }
 }
@@ -414,6 +536,7 @@ function buildMenu() {
       label: 'File',
       submenu: [
         { label: 'New Tab', accelerator: 'CmdOrCtrl+T', click: () => (focusedWindow() || newWindow()).addTab() },
+        { label: 'Reopen Closed Tab', accelerator: 'CmdOrCtrl+Shift+T', enabled: closedTabs.length > 0, click: () => (focusedWindow() || newWindow()).reopenClosed() },
         { label: 'New Window', accelerator: 'CmdOrCtrl+N', click: newWindow },
         { label: 'Open…', accelerator: 'CmdOrCtrl+O', click: menuOpen },
         { label: 'Open Recent', submenu: recentItems },
@@ -470,6 +593,16 @@ function buildMenu() {
         { type: 'separator' },
         { label: 'Next Tab', accelerator: IS_MAC ? 'Cmd+Shift+]' : 'Ctrl+Tab', click: () => focusedWindow()?.cycle(1) },
         { label: 'Previous Tab', accelerator: IS_MAC ? 'Cmd+Shift+[' : 'Ctrl+Shift+Tab', click: () => focusedWindow()?.cycle(-1) },
+        {
+          // Ctrl/Cmd+digit are the zoom shortcuts, so tabs use Alt (Control on macOS).
+          label: 'Go to Tab',
+          submenu: Array.from({ length: 9 }, (_, n) => ({
+            label: n === 8 ? 'Last Tab' : `Tab ${n + 1}`,
+            accelerator: `${IS_MAC ? 'Ctrl' : 'Alt'}+${n + 1}`,
+            click: () => focusedWindow()?.goTo(n),
+          })),
+        },
+        { label: 'Focus Tab Bar', accelerator: 'F6', click: () => focusedWindow()?.focusStrip() },
         { type: 'separator' },
         { role: 'togglefullscreen' },
         { label: 'Toggle Developer Tools', accelerator: IS_MAC ? 'Alt+Cmd+I' : 'Ctrl+Shift+I', click: () => focusedWindow()?.active?.view.webContents.toggleDevTools() },
@@ -906,16 +1039,19 @@ ipcMain.on('win:close-cancelled', (e) => {
   tabFor(e.sender)?.owner.cancelClose();
 });
 
-ipcMain.on('tabs:activate', (e, id) => {
+// Tab strip messages: (window, tab) for the strip that sent it and the tab id it names.
+const onStrip = (channel, fn) => ipcMain.on(channel, (e, id, ...args) => {
   const dw = [...windows].find((w) => w.strip.webContents === e.sender);
   const tab = dw?.tabs.find((t) => t.id === id);
-  if (tab) dw.activate(tab);
+  if (dw && (tab || id == null)) fn(dw, tab, ...args);
 });
-ipcMain.on('tabs:close', (e, id) => {
-  const dw = [...windows].find((w) => w.strip.webContents === e.sender);
-  const tab = dw?.tabs.find((t) => t.id === id);
-  if (tab) dw.closeTab(tab);
-});
+onStrip('tabs:activate', (dw, tab, opts) => tab && dw.activate(tab, { focus: opts?.focus !== false }));
+onStrip('tabs:close', (dw, tab) => tab && dw.closeTab(tab));
+onStrip('tabs:move', (dw, tab, index) => tab && dw.moveTab(tab, index));
+onStrip('tabs:context', (dw, tab) => tab && dw.tabMenu(tab));
+onStrip('tabs:list', (dw) => dw.listMenu());
+// Dropped outside the strip: the tab gets its own window where it was dropped.
+onStrip('tabs:detach', (dw, tab) => tab && dw.detachTab(tab, screen.getCursorScreenPoint()));
 ipcMain.on('tabs:new', (e) => {
   [...windows].find((w) => w.strip.webContents === e.sender)?.addTab();
 });
@@ -961,6 +1097,11 @@ if (!app.requestSingleInstanceLock()) {
       restore = choice === 0;
     }
     const files = [...pendingFiles, ...pdfArgs(process.argv)];
+    // Nothing asked for: pick up where the last session left off.
+    if (!files.length && !restore) {
+      const last = await readJson('session.json', []);
+      files.push(...(Array.isArray(last) ? last : []).filter((f) => typeof f === 'string' && fsSync.existsSync(f)));
+    }
     const dw = new DocWindow();
     if (restore) {
       for (const doc of recovered) {
@@ -983,6 +1124,7 @@ if (!app.requestSingleInstanceLock()) {
     if (!windows.size) return;
     e.preventDefault();
     quitting = true;
+    session = [];
     for (const w of [...windows]) {
       if (!quitting) break;
       w.requestClose();
