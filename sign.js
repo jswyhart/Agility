@@ -113,16 +113,152 @@ class CertificateStore {
   }
 }
 
+// ---- Timestamps (RFC 3161) ---------------------------------------------------------
+// A timestamp authority countersigns the signature value with the current time.
+// That proves the signature existed then, so it stays verifiable after the
+// signer's certificate expires. Only a hash of the signature leaves the computer.
+
+const { asn1 } = forge;
+const U = asn1.Class.UNIVERSAL;
+const OID_TIMESTAMP_TOKEN = '1.2.840.113549.1.9.16.2.14';
+const OID_TST_INFO = '1.2.840.113549.1.9.16.1.4';
+const DEFAULT_TSA = 'http://timestamp.digicert.com';
+const bin = (s) => Buffer.from(s, 'binary');
+const der = (node) => bin(asn1.toDer(node).getBytes());
+const seq = (...items) => asn1.create(U, asn1.Type.SEQUENCE, true, items);
+const oidNode = (oid) => asn1.create(U, asn1.Type.OID, false, asn1.oidToDer(oid).getBytes());
+const isContext = (node, n) => node?.tagClass === asn1.Class.CONTEXT_SPECIFIC && node.type === n;
+
+/** The pieces of a CMS SignedData (ContentInfo ASN.1) that signing and verifying need. */
+function parseSignedData(contentInfo) {
+  const sd = contentInfo.value[1].value[0].value;
+  const encap = sd[2].value;
+  const certSet = sd.find((n) => isContext(n, 0));
+  const signerInfo = sd[sd.length - 1].value[0];
+  const si = signerInfo.value;
+  const signedAttrs = si.find((n) => isContext(n, 0));
+  const unsignedAttrs = si.find((n, k) => k > 3 && isContext(n, 1));
+  const signature = si.find((n, k) => k > 3 && n.tagClass === U && n.type === asn1.Type.OCTETSTRING);
+  let content = null;
+  if (encap[1]) {
+    const octets = encap[1].value[0];
+    // Usually one OCTET STRING; a constructed one is its pieces joined.
+    content = bin(typeof octets.value === 'string' ? octets.value : octets.value.map((p) => p.value).join(''));
+  }
+  return {
+    contentType: asn1.derToOid(encap[0].value),
+    content,
+    certs: (certSet?.value || []).map((c) => { try { return new crypto.X509Certificate(der(c)); } catch { return null; } }).filter(Boolean),
+    signerInfo,
+    serial: si[1].value?.[1]?.value ? bin(si[1].value[1].value).toString('hex').replace(/^(00)+/, '') : null,
+    digestOid: asn1.derToOid(si[2].value[0].value),
+    signedAttrs: signedAttrs?.value || null,
+    unsignedAttrs: unsignedAttrs?.value || [],
+    signature: bin(signature.value),
+  };
+}
+
+const attrValue = (attrs, oid) => (attrs || []).find((a) => asn1.derToOid(a.value[0].value) === oid)?.value[1].value[0];
+
+/** Ask a timestamp authority for a token over `signature` (Buffer). Returns the token's ASN.1. */
+async function requestTimestamp(url, signature) {
+  const hash = crypto.createHash('sha256').update(signature).digest();
+  const nonce = crypto.randomBytes(8);
+  nonce[0] &= 0x7f; // a positive INTEGER
+  if (nonce[0] === 0) nonce[0] = 1;
+  const request = der(seq(
+    asn1.create(U, asn1.Type.INTEGER, false, asn1.integerToDer(1).getBytes()),
+    seq(seq(oidNode(forge.pki.oids.sha256), asn1.create(U, asn1.Type.NULL, false, '')), asn1.create(U, asn1.Type.OCTETSTRING, false, hash.toString('binary'))),
+    asn1.create(U, asn1.Type.INTEGER, false, nonce.toString('binary')),
+    asn1.create(U, asn1.Type.BOOLEAN, false, '\xff'), // certReq: include the authority's certificate
+  ));
+  let body;
+  try {
+    const res = await fetch(url, {
+      method: 'POST', headers: { 'content-type': 'application/timestamp-query' }, body: request, signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) throw new Error(`the server answered ${res.status}`);
+    body = Buffer.from(await res.arrayBuffer());
+  } catch (err) {
+    throw new Error(`Couldn't get a timestamp from ${url} (${err.cause?.code || err.cause?.errors?.[0]?.code || err.message}). Check the connection and the server address, or sign without a timestamp.`);
+  }
+  let token;
+  let info;
+  try {
+    const response = asn1.fromDer(body.toString('binary'));
+    const status = response.value[0].value[0].value.charCodeAt(0);
+    if (status > 1 || !response.value[1]) throw new Error(`request refused (status ${status})`);
+    token = response.value[1];
+    info = readTimestampToken(token);
+  } catch (err) {
+    throw new Error(`The timestamp server at ${url} sent an answer that can't be used (${err.message}).`);
+  }
+  if (!info.imprint.equals(hash) || (info.nonce && info.nonce !== nonce.toString('hex'))) {
+    throw new Error(`The timestamp from ${url} is for different data; not using it.`);
+  }
+  return token;
+}
+
+/** Read and check a timestamp token (ASN.1): who issued it, when, over which hash. */
+function readTimestampToken(token) {
+  const sd = parseSignedData(token);
+  if (sd.contentType !== OID_TST_INFO || !sd.content) throw new Error('not a timestamp token');
+  const tst = asn1.fromDer(sd.content.toString('binary')).value;
+  const imprint = tst[2].value;
+  const genTime = tst.find((n, k) => k > 2 && n.tagClass === U && n.type === asn1.Type.GENERALIZEDTIME);
+  const nonce = tst.find((n, k) => k > 4 && n.tagClass === U && n.type === asn1.Type.INTEGER);
+  // The authority's certificate: the one the signer info names, else whichever verifies.
+  const named = sd.certs.find((c) => c.serialNumber.toLowerCase().replace(/^(00)+/, '') === sd.serial);
+  const alg = DIGESTS[sd.digestOid] || 'sha256';
+  let cert = named || sd.certs[0];
+  let valid = false;
+  if (sd.signedAttrs) {
+    const md = attrValue(sd.signedAttrs, forge.pki.oids.messageDigest);
+    const digestOk = md && bin(md.value).equals(crypto.createHash(alg).update(sd.content).digest());
+    const signedBytes = der(asn1.create(U, asn1.Type.SET, true, sd.signedAttrs));
+    const verifies = (c) => { try { return crypto.verify(alg, signedBytes, c.publicKey, sd.signature); } catch { return false; } };
+    const signer = digestOk ? (named ? [named] : sd.certs).find(verifies) : null;
+    if (signer) {
+      cert = signer;
+      valid = true;
+    }
+  }
+  return {
+    valid,
+    time: asn1.generalizedTimeToDate(genTime.value),
+    imprint: bin(imprint[1].value),
+    imprintAlg: DIGESTS[asn1.derToOid(imprint[0].value[0].value)] || 'sha256',
+    nonce: nonce ? bin(nonce.value).toString('hex') : null,
+    authority: cert ? (cert.subject.match(/CN=([^\n]+)/) || [])[1] || cert.subject : '',
+    trusted: !!cert && chainTrusted(cert, sd.certs),
+  };
+}
+
 // ---- Signing ----------------------------------------------------------------------
 
 /**
  * Sign PDF bytes. opts: { certId, password, reason, location, contact,
- * visible: { page, rect: [x1, y1, x2, y2] (user space) } | null }.
+ * visible: { page, rect: [x1, y1, x2, y2] (user space) } | null,
+ * timestampUrl: a timestamp authority to countersign the signing time, or '' }.
  */
 async function signPdf(store, bytes, opts) {
   const { pdflibAddPlaceholder } = require('@signpdf/placeholder-pdf-lib');
   const { P12Signer } = require('@signpdf/signer-p12');
   const signpdf = require('@signpdf/signpdf').default;
+  const tsa = (opts.timestampUrl || '').trim();
+  if (tsa && !/^https?:\/\//i.test(tsa)) throw new Error('The timestamp server address must start with http:// or https://');
+  // The same signer, with the authority's token added as an unsigned attribute.
+  class TimestampingSigner extends P12Signer {
+    async sign(pdfBuffer, signingTime) {
+      const cms = asn1.fromDer((await super.sign(pdfBuffer, signingTime)).toString('binary'));
+      const { signerInfo, signature } = parseSignedData(cms);
+      const token = await requestTimestamp(tsa, signature);
+      signerInfo.value.push(asn1.create(asn1.Class.CONTEXT_SPECIFIC, 1, true, [
+        seq(oidNode(OID_TIMESTAMP_TOKEN), asn1.create(U, asn1.Type.SET, true, [token])),
+      ]));
+      return der(cms);
+    }
+  }
   const p12 = await store.p12(opts.certId);
   const { cert } = readP12(p12, opts.password); // a clear error for a wrong password
   const who = certSummary(cert);
@@ -156,10 +292,10 @@ async function signPdf(store, bytes, opts) {
   }
   pdflibAddPlaceholder({
     pdfDoc: doc, pdfPage: page, reason: opts.reason || 'Signed', contactInfo: opts.contact || who.email || '',
-    name: who.name, location: opts.location || '', signingTime: now, signatureLength: 16384, widgetRect, appName: 'Agility',
+    name: who.name, location: opts.location || '', signingTime: now, signatureLength: tsa ? 32768 : 16384, widgetRect, appName: 'Agility',
   });
   const prepared = await doc.save({ useObjectStreams: false });
-  const signed = await signpdf.sign(Buffer.from(prepared), new P12Signer(p12, { passphrase: opts.password }), now);
+  const signed = await signpdf.sign(Buffer.from(prepared), new (tsa ? TimestampingSigner : P12Signer)(p12, { passphrase: opts.password }), now);
   return new Uint8Array(signed);
 }
 
@@ -194,8 +330,12 @@ function verifySignatures(bytes, ownFingerprints = []) {
     const [a, b, c, d] = m.slice(1).map(Number);
     const result = { intact: false, coversWholeFile: c + d === buf.length };
     try {
-      const hex = text.slice(a + b + 1, c - 1).replace(/(00)+$/, '');
-      const p7 = forge.pkcs7.messageFromAsn1(forge.asn1.fromDer(forge.util.hexToBytes(hex)));
+      // The CMS is zero-padded to fill its placeholder; its own length says where it ends
+      // (stripping trailing zeros would also eat a signature that happens to end in 00).
+      const padded = Buffer.from(text.slice(a + b + 1, c - 1).replace(/[^0-9a-fA-F]/g, ''), 'hex');
+      const lenBytes = padded[1] & 0x80 ? padded[1] & 0x7f : 0;
+      const cmsLength = 2 + lenBytes + (lenBytes ? padded.readUIntBE(2, lenBytes) : padded[1]);
+      const p7 = forge.pkcs7.messageFromAsn1(forge.asn1.fromDer(padded.subarray(0, cmsLength).toString('binary')));
       const signed = Buffer.concat([buf.subarray(a, a + b), buf.subarray(c, c + d)]);
       const cap = p7.rawCapture;
       const alg = DIGESTS[forge.asn1.derToOid(cap.digestAlgorithm)] || 'sha256';
@@ -222,7 +362,24 @@ function verifySignatures(bytes, ownFingerprints = []) {
         const raw = Buffer.from(hx[1], 'hex');
         return raw[0] === 0xfe && raw[1] === 0xff ? raw.subarray(2).swap16().toString('utf16le') : raw.toString('latin1');
       };
+      // A timestamp token, if the signer asked an authority for one.
+      let timestamp = null;
+      const token = attrValue(cap.unauthenticatedAttributes, OID_TIMESTAMP_TOKEN);
+      if (token) {
+        try {
+          const t = readTimestampToken(token);
+          const matches = t.imprint.equals(crypto.createHash(t.imprintAlg).update(Buffer.from(cap.signature, 'binary')).digest());
+          timestamp = { valid: t.valid && matches, time: t.time.toISOString(), authority: t.authority, trusted: t.trusted };
+        } catch {
+          timestamp = { valid: false, time: null, authority: '', trusted: false };
+        }
+      }
+      const provenTime = timestamp?.valid ? new Date(timestamp.time) : null;
       Object.assign(result, {
+        timestamp,
+        // Expired now, with no timestamp proving it was signed while still valid.
+        certExpired: new Date(signer.validTo) < new Date(),
+        signedWhileValid: !!provenTime && provenTime >= new Date(signer.validFrom) && provenTime <= new Date(signer.validTo),
         intact: !!(digestOk && sigOk),
         signer: signerName,
         issuer: (signer.issuer.match(/CN=([^\n]+)/) || [])[1] || signer.issuer,
@@ -242,4 +399,4 @@ function verifySignatures(bytes, ownFingerprints = []) {
   return results;
 }
 
-module.exports = { CertificateStore, signPdf, verifySignatures };
+module.exports = { CertificateStore, signPdf, verifySignatures, DEFAULT_TSA };

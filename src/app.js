@@ -3409,13 +3409,23 @@ function renderSignatureBanner() {
   const sigs = state.signatures || [];
   el.hidden = !sigs.length;
   if (!sigs.length) return;
-  const when = (s) => (s.signedAt ? ` on ${new Date(s.signedAt).toLocaleString()}` : '');
+  // A valid timestamp is the time to show: the signer's own clock proves nothing.
+  const stamped = (s) => !!s.timestamp?.valid;
+  const when = (s) => {
+    const t = stamped(s) ? s.timestamp.time : s.signedAt;
+    return t ? ` on ${new Date(t).toLocaleString()}` : '';
+  };
   const lines = sigs.map((s) => {
     if (s.error || !s.intact) return { level: 'bad', text: `The signature${s.signer ? ` by ${s.signer}` : ''} is not valid: the signed content was altered or the signature is damaged.` };
     if (!s.coversWholeFile) return { level: 'warn', text: `Signed by ${s.signer}${when(s)}, but the document was changed after it was signed.` };
     const who = s.trusted ? "the signer's identity is verified by a trusted authority"
       : s.own ? 'signed with your own certificate' : `the certificate (issued by ${s.issuer}) isn't from a trusted authority, so the identity isn't verified`;
-    return { level: s.trusted || s.own ? 'ok' : 'warn', text: `Signed by ${s.signer}${when(s)}. The document hasn't changed since; ${who}.${s.reason ? ` Reason: ${s.reason}.` : ''}` };
+    const time = stamped(s) ? ` The signing time is confirmed by ${s.timestamp.authority || 'a timestamp authority'}${s.timestamp.trusted ? '' : ", which isn't a trusted authority"}.`
+      : s.timestamp ? " It carries a timestamp that doesn't check out, so the signing time is the signer's own clock." : '';
+    // An expired certificate only matters when nothing proves the signature predates the expiry.
+    const expired = s.certExpired && !s.signedWhileValid ? " The signer's certificate has since expired, and no timestamp shows it was signed before that." : '';
+    const level = (s.trusted || s.own) && !expired && !(s.timestamp && !stamped(s)) ? 'ok' : 'warn';
+    return { level, text: `Signed by ${s.signer}${when(s)}. The document hasn't changed since; ${who}.${time}${expired}${s.reason ? ` Reason: ${s.reason}.` : ''}` };
   });
   const worst = lines.some((l) => l.level === 'bad') ? 'bad' : lines.some((l) => l.level === 'warn') ? 'warn' : 'ok';
   el.className = `sig-banner ${worst}`;
@@ -3423,6 +3433,7 @@ function renderSignatureBanner() {
 }
 
 let pendingSignature = null;
+const DEFAULT_TSA = 'http://timestamp.digicert.com';
 
 async function chooseCertificate() {
   let list = await api.certificates();
@@ -3436,8 +3447,18 @@ async function chooseCertificate() {
         <label class="field-row">Reason <input type="text" class="c-reason" placeholder="I approve this document" /></label>
         <label class="field-row">Location <input type="text" class="c-loc" /></label>
         <label class="opt"><input type="checkbox" class="c-visible" checked /> Show a signature box on the page</label>
+        <label class="opt" title="A timestamp authority confirms when you signed, so the signature can still be checked after your certificate expires. Only a fingerprint of the signature is sent."><input type="checkbox" class="c-ts" /> Add a trusted timestamp (contacts a timestamp server)</label>
+        <label class="field-row c-ts-row" hidden>Server <input type="text" class="c-tsa" spellcheck="false" /></label>
       </div><div class="actions"></div>`;
     const q = (c) => m.querySelector(c);
+    // The timestamp choice is remembered between signatures.
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem('agility.timestamp') || '{}'); } catch { /* start fresh */ }
+    q('.c-ts').checked = !!saved.on;
+    q('.c-tsa').value = saved.url || DEFAULT_TSA;
+    const showTsa = () => (q('.c-ts-row').hidden = !q('.c-ts').checked);
+    q('.c-ts').addEventListener('change', showTsa);
+    showTsa();
     const fill = (selectId) => {
       q('.c-id').replaceChildren(...list.map((c) => new Option(`${c.name}${c.org ? ` (${c.org})` : ''}${c.selfSigned ? ' · self-signed' : ` · ${c.issuer}`}`, c.id)));
       if (selectId) q('.c-id').value = selectId;
@@ -3468,7 +3489,10 @@ async function chooseCertificate() {
     m.querySelector('.actions').append(button('Cancel', 'secondary', () => close(null)), button('Sign…', 'primary', () => {
       if (!q('.c-id').value) return toast('Create or import a certificate first', { error: true });
       if (!q('.c-pw').value) return toast('Enter the certificate password', { error: true });
-      close({ certId: q('.c-id').value, password: q('.c-pw').value, reason: q('.c-reason').value.trim(), location: q('.c-loc').value.trim(), visible: q('.c-visible').checked });
+      const timestampUrl = q('.c-ts').checked ? q('.c-tsa').value.trim() || DEFAULT_TSA : '';
+      if (timestampUrl && !/^https?:\/\//i.test(timestampUrl)) return toast('The timestamp server address must start with http:// or https://', { error: true });
+      try { localStorage.setItem('agility.timestamp', JSON.stringify({ on: !!timestampUrl, url: q('.c-tsa').value.trim() })); } catch { /* not remembered */ }
+      close({ certId: q('.c-id').value, password: q('.c-pw').value, reason: q('.c-reason').value.trim(), location: q('.c-loc').value.trim(), visible: q('.c-visible').checked, timestampUrl });
     }));
   });
 }
@@ -3530,7 +3554,8 @@ function completeSignature(opts, visible) {
     try {
       res = await api.signPdf(out, { ...opts, visible }, `${base} (signed).pdf`);
     } catch (err) {
-      throw new Error(/MAC|password/i.test(err.message) ? 'Wrong certificate password.' : err.message);
+      const text = err.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+      throw new Error(/timestamp/i.test(text) ? text : /MAC|password/i.test(text) ? 'Wrong certificate password.' : text);
     }
     if (!res) return;
     state.dirty = false;
